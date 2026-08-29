@@ -1,0 +1,37 @@
+# Render Blueprint：仅用于 Spatial Fabric 的免费演示/预览环境，不是生产拓扑。
+# 数据库和 Web 服务均使用 Free plan；Render Free Postgres 会在创建 30 天后过期。
+# 若需要长期预览，可保留 Web 服务并把 DATABASE_URL 改接 Neon 等长期数据库。
+services:
+  - type: web
+    name: yujian-spatial-fabric-preview
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: ./scripts/start-preview.sh
+    healthCheckPath: /health/ready
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: SF_SECRET_KEY
+        generateValue: true
+      - key: SF_ALLOWED_HOSTS
+        value: .onrender.com
+      - key: SF_CSRF_TRUSTED_ORIGINS
+        value: https://*.onrender.com
+      - key: SF_SECURE_SSL_REDIRECT
+        value: "true"
+      - key: SF_TRUST_PROXY_HEADERS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: yujian-spatial-fabric-preview-db
+          property: connectionString
+
+databases:
+  - name: yujian-spatial-fabric-preview-db
+    plan: free
+    region: singapore
+    postgresMajorVersion: "17"
+    databaseName: spatial_fabric_preview
+    user: spatial_fabric

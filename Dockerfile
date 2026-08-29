@@ -25,15 +25,17 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.7 /uv /uvx /bin/
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY backend ./backend
+COPY scripts ./scripts
 
 # 生产镜像不安装 dev group，并关闭 editable 安装，减少运行环境的不确定性。
-RUN uv sync --no-dev --no-editable --frozen=false
+RUN uv sync --no-dev --no-editable --frozen=false \
+    && chmod +x /app/scripts/start-preview.sh
 
 ENV PATH="/app/.venv/bin:$PATH" \
     DJANGO_SETTINGS_MODULE=config.settings.production
 
 EXPOSE 8000
 
-# 第一阶段直接使用 Uvicorn ASGI。后续如果引入反向代理、进程管理或 K8s，
-# 通过 Deployment Profile 调整，不改变 Django Domain Model。
+# 基础镜像仍保持普通生产启动命令。Render Preview 通过 render.yaml 的 dockerCommand
+# 显式选择 start-preview.sh，避免把“启动时 migrate”的临时策略污染所有生产部署。
 CMD ["uvicorn", "config.asgi:application", "--app-dir", "backend", "--host", "0.0.0.0", "--port", "8000"]

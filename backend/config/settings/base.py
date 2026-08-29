@@ -12,10 +12,21 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from config.database import build_database_config
+
 BASE_DIR = Path(__file__).resolve().parents[3]
 SECRET_KEY = os.getenv("SF_SECRET_KEY", "unsafe-development-key")
 DEBUG = False
-ALLOWED_HOSTS = [host.strip() for host in os.getenv("SF_ALLOWED_HOSTS", "localhost").split(",") if host.strip()]
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv("SF_ALLOWED_HOSTS", "localhost").split(",")
+    if host.strip()
+]
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("SF_CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 # 只注册已经开始实现并具备模型/迁移计划的 Fabric 模块；其余模块按 Phase 正式启用。
 INSTALLED_APPS = [
@@ -45,30 +56,26 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 ROOT_URLCONF = "config.urls"
-TEMPLATES = [{
-    "BACKEND": "django.template.backends.django.DjangoTemplates",
-    "DIRS": [],
-    "APP_DIRS": True,
-    "OPTIONS": {"context_processors": [
-        "django.template.context_processors.request",
-        "django.contrib.auth.context_processors.auth",
-        "django.contrib.messages.context_processors.messages",
-    ]},
-}]
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ]
+        },
+    }
+]
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# PostgreSQL/PostGIS 是默认 System of Record；未来兼容通过 Repository/Provider 层处理。
-DATABASES = {"default": {
-    "ENGINE": "django.contrib.gis.db.backends.postgis",
-    "NAME": os.getenv("POSTGRES_DB", "spatial_fabric"),
-    "USER": os.getenv("POSTGRES_USER", "spatial_fabric"),
-    "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
-    "HOST": os.getenv("POSTGRES_HOST", "127.0.0.1"),
-    "PORT": os.getenv("POSTGRES_PORT", "5432"),
-    "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "60")),
-    "OPTIONS": {"connect_timeout": 5},
-}}
+# PostgreSQL/PostGIS 是默认 System of Record。DATABASE_URL 与 POSTGRES_* 都只是部署输入，
+# 由 provider-neutral 适配函数统一转换，业务领域模型不感知具体数据库托管厂商。
+DATABASES = {"default": build_database_config()}
 
 # 必须在第一次 migration 前固定；Account 与领域 Principal 保持分离。
 AUTH_USER_MODEL = "iam.Account"

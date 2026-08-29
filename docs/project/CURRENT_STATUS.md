@@ -15,40 +15,41 @@
 - [x] `Asset / AssetVersion / AssetAlias / Artifact / Distribution` 模型初稿
 - [x] Phase A ERD
 - [x] Phase A migration 顺序设计
-- [x] Phase A 跨租户与资产引用不变量测试代码
+- [x] Phase A 正式 migrations 已由 GitHub CI 的 Django 5.2.17 生成并固化
+- [x] provider-neutral PostGIS baseline migration
+- [x] Phase A 跨租户与资产引用不变量测试
 - [x] 中文领域注释/docstring 基线
-- [x] GitHub Actions migration preview CI
+- [x] 严格 GitHub Actions：migration sync / migrate / pytest / Provider leak / Ruff / audit / Docker build
 - [x] 跨对话 handoff 入口
+- [x] 免费 Preview 部署配置：Render Blueprint + 通用 DATABASE_URL 适配
 
 ## 当前真实验证状态
 
 ### 已验证
 
-- [x] 生成环境 Python compileall 语法检查
-- [x] UUIDv7 version / variant / 基础唯一性 smoke test
-- [x] provider leakage 脚本（生成环境）
+- [x] Django `manage.py check`
+- [x] `makemigrations --check --dry-run`
+- [x] PostgreSQL/PostGIS 空库 `migrate --noinput`
+- [x] Phase A pytest（真实 migrations）
+- [x] Provider leakage check
+- [x] Ruff
+- [x] pip-audit
 
-### 等待 GitHub CI / 可运行环境验证
+### 当前 CI 仍需确认
 
-- [ ] Django `manage.py check`
-- [ ] migration preview
-- [ ] 正式 migration 文件
-- [ ] PostgreSQL/PostGIS migrate
-- [ ] pytest
-- [ ] Ruff
-- [ ] pip-audit
+- [ ] 最新提交的生产 Docker image build 全绿
+- [ ] 新增 DATABASE_URL / Render Preview 适配后的完整 CI 回归
+- [ ] Render 外部真实 Preview URL（需要在 Render 账号中 Apply Blueprint 后产生）
 
-当前生成环境无法解析 Python 包仓库 DNS，因此无法安装 Django/Psycopg；**未运行的项目不得标记为通过**。
+**纪律：未实际运行的项目不得标记为通过。**
 
 ## 下一任务
 
-1. 打开首个 Phase A Pull Request；
-2. 读取 GitHub Actions 的 `makemigrations --dry-run --verbosity 3` 输出；
-3. 修复真实 Django system check / test 暴露的问题；
-4. 固化 migrations；
-5. CI 切换成严格 `makemigrations --check + migrate + pytest`；
-6. 更新本文件与 `00_PROJECT_HANDOFF.md`；
-7. Phase A 全绿后进入 Phase B IAM & Governance。
+1. 完成 Preview 适配提交的严格 CI 回归；
+2. CI 全绿后把 PR #1 从 Draft 收敛到可 Review 状态；
+3. 在 Render 中 Apply `render.yaml`，验证 `/health/ready` 与 `/api/docs/`；
+4. 更新 `00_PROJECT_HANDOFF.md` 和本文件中的真实外部部署状态；
+5. Phase A 合并后进入 Phase B IAM & Governance。
 
 ## 当前禁止
 
@@ -58,4 +59,4 @@
 - 不拆微服务；
 - 不新增 provider-specific 核心字段；
 - 不绕过版本发布服务直接修改 Published AssetVersion；
-- 不在 migrations 真实通过前宣称数据库地基完成。
+- 不把免费 Preview 环境当成生产环境或保存正式客户数据。
