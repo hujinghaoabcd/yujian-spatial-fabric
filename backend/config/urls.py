@@ -1,7 +1,6 @@
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
-
 from spatial_fabric.common.api import LivenessView, ReadinessView
 
 urlpatterns = [

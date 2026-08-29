@@ -9,13 +9,21 @@ from uuid import uuid4
 import pytest
 from django.core.exceptions import ValidationError
 
-from spatial_fabric.assets.models import Artifact, Asset, AssetAlias, AssetVersion, Distribution, DistributionType
+from spatial_fabric.assets.models import (
+    Artifact,
+    Asset,
+    AssetAlias,
+    AssetVersion,
+    Distribution,
+    DistributionType,
+)
 from spatial_fabric.iam.models import Account, Principal, PrincipalType
 from spatial_fabric.tenancy.models import Environment, EnvironmentType, Project, Tenant, Workspace
 
 
 def create_principal(tenant: Tenant, name: str) -> Principal:
     """创建测试用机器主体，避免测试依赖登录 Account。"""
+
     return Principal.objects.create(
         tenant=tenant,
         principal_type=PrincipalType.SERVICE_ACCOUNT,

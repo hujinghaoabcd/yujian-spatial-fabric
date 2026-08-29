@@ -40,11 +40,17 @@ extend-exclude = ["**/migrations/*.py"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B", "S", "DJ", "ASYNC", "RUF"]
-ignore = ["S101"]
+# RUF001/RUF002/RUF003 会把中文全角标点视为“易混淆字符”。本项目明确要求中文注释和中文
+# docstring，因此关闭这三条纯字符风格规则；这不会削弱语法、导入、安全、Django 等质量检查。
+ignore = ["S101", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 "backend/config/settings/*.py" = ["F403", "F405"]
-"backend/**/tests/*.py" = ["S101"]
+# Django 模型 Meta.indexes/constraints/REQUIRED_FIELDS 天然使用类级可变容器，属于框架约定。
+"backend/spatial_fabric/**/models.py" = ["RUF012"]
+# DRF APIView 的 authentication_classes/permission_classes 也是框架规定的类级配置。
+"backend/spatial_fabric/common/api.py" = ["RUF012"]
+"backend/**/tests/*.py" = ["S101", "S106"]
 
 [tool.ruff.format]
 quote-style = "double"

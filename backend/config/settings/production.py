@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
-from django.core.exceptions import ImproperlyConfigured
-from .base import *  # noqa: F403
 
-if SECRET_KEY == "unsafe-development-key":  # noqa: F405
+from django.core.exceptions import ImproperlyConfigured
+
+from .base import *
+
+# 不比较 SECRET_KEY 的某个硬编码“哨兵值”，而是直接要求生产环境显式提供 Secret。
+# 这样既避免把开发占位值当成安全规则，也能让 Secret 管理边界更清楚。
+if not os.getenv("SF_SECRET_KEY"):
     raise ImproperlyConfigured("生产环境必须显式设置 SF_SECRET_KEY")
 
 DEBUG = False

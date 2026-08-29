@@ -5,9 +5,11 @@ ExternalApplication 都可以拥有 Principal，但不应伪装成 Django User�
 """
 
 from __future__ import annotations
+
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+
 from spatial_fabric.common.ids import uuid7
 from spatial_fabric.common.models import ConcurrentModel, TimeStampedModel, UUID7Model
 
@@ -15,7 +17,7 @@ from spatial_fabric.common.models import ConcurrentModel, TimeStampedModel, UUID
 class AccountManager(BaseUserManager["Account"]):
     use_in_migrations = True
 
-    def create_user(self, email: str, password: str | None = None, **extra_fields: object) -> "Account":
+    def create_user(self, email: str, password: str | None = None, **extra_fields: object) -> Account:
         if not email:
             raise ValueError("必须提供邮箱地址。")
         email = self.normalize_email(email)
@@ -24,7 +26,9 @@ class AccountManager(BaseUserManager["Account"]):
         account.save(using=self._db)
         return account
 
-    def create_superuser(self, email: str, password: str | None = None, **extra_fields: object) -> "Account":
+    def create_superuser(
+        self, email: str, password: str | None = None, **extra_fields: object
+    ) -> Account:
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
@@ -37,6 +41,7 @@ class AccountManager(BaseUserManager["Account"]):
 
 class Account(AbstractUser):
     """Django 登录账户；不要向这里堆 Tenant、Role、Quota、Agent 等领域字段。"""
+
     id = models.UUIDField(primary_key=True, default=uuid7, editable=False)
     username = None
     email = models.EmailField("邮箱", unique=True)
@@ -66,10 +71,27 @@ class PrincipalStatus(models.TextChoices):
 
 class Principal(UUID7Model, TimeStampedModel, ConcurrentModel):
     """Fabric 所有授权判断的统一主体。tenant 允许为空以容纳平台级系统主体。"""
-    tenant = models.ForeignKey("tenancy.Tenant", on_delete=models.PROTECT, related_name="principals", null=True, blank=True, verbose_name="所属租户")
-    account = models.OneToOneField(Account, on_delete=models.PROTECT, related_name="principal", null=True, blank=True, verbose_name="登录账户")
+
+    tenant = models.ForeignKey(
+        "tenancy.Tenant",
+        on_delete=models.PROTECT,
+        related_name="principals",
+        null=True,
+        blank=True,
+        verbose_name="所属租户",
+    )
+    account = models.OneToOneField(
+        Account,
+        on_delete=models.PROTECT,
+        related_name="principal",
+        null=True,
+        blank=True,
+        verbose_name="登录账户",
+    )
     principal_type = models.CharField("主体类型", max_length=32, choices=PrincipalType.choices)
-    status = models.CharField("状态", max_length=24, choices=PrincipalStatus.choices, default=PrincipalStatus.ACTIVE)
+    status = models.CharField(
+        "状态", max_length=24, choices=PrincipalStatus.choices, default=PrincipalStatus.ACTIVE
+    )
     display_name = models.CharField("显示名称", max_length=200)
     description = models.TextField("说明", blank=True)
 

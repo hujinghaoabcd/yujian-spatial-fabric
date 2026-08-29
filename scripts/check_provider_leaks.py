@@ -6,8 +6,9 @@ Provider 名字可以出现在 adapters/providers、配置、测试和文档中�
 """
 
 from __future__ import annotations
-from pathlib import Path
+
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "backend" / "spatial_fabric"
