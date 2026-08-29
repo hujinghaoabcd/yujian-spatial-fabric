@@ -25,8 +25,6 @@ from spatial_fabric.iam.models import (
     Principal,
     PrincipalType,
     Privilege,
-    PrivilegeCategory,
-    PrivilegeRiskLevel,
     RoleAssignment,
     RoleAssignmentStatus,
     RoleDefinition,
@@ -96,28 +94,21 @@ def create_role(
 
 @pytest.mark.django_db
 def test_execute_and_download_are_independent_privileges() -> None:
-    """能执行专业模型，不代表能下载模型或数据制品。"""
+    """能执行专业模型，不代表能下载模型或数据制品。
+
+    ``execute`` / ``download`` 已由 ``iam/0003_seed_core_privileges`` 注册为平台参考数据，
+    测试必须复用该稳定词汇，不能重新创建同名 Privilege。这里真正验证的是：Role 只获得
+    显式绑定的 ``execute``，不会因为另一个核心动作 ``download`` 存在就自动继承它。
+    """
 
     tenant, _, _, _ = create_tenant_tree("priv-separation")
     admin = create_principal(tenant, "租户管理员")
-    execute = Privilege.objects.create(
-        key="execute",
-        name="执行",
-        category=PrivilegeCategory.EXECUTE,
-        risk_level=PrivilegeRiskLevel.HIGH,
-    )
-    download = Privilege.objects.create(
-        key="download",
-        name="下载",
-        category=PrivilegeCategory.READ,
-        risk_level=PrivilegeRiskLevel.MEDIUM,
-    )
+    execute = Privilege.objects.get(key="execute")
+    download = Privilege.objects.get(key="download")
     role = create_role(tenant=tenant, key="model-operator", created_by=admin)
     RolePrivilege.objects.create(role=role, privilege=execute)
 
-    role_keys = set(
-        role.role_privileges.values_list("privilege__key", flat=True)
-    )
+    role_keys = set(role.role_privileges.values_list("privilege__key", flat=True))
     assert "execute" in role_keys
     assert "download" not in role_keys
     assert execute.id != download.id
