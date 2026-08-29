@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/phase-a-foundation]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: spatial_fabric_test
+          POSTGRES_USER: spatial_fabric
+          POSTGRES_PASSWORD: spatial_fabric_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spatial_fabric -d spatial_fabric_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      SF_ENV: test
+      SF_SECRET_KEY: ci-only-not-production
+      POSTGRES_DB: spatial_fabric_test
+      POSTGRES_USER: spatial_fabric
+      POSTGRES_PASSWORD: spatial_fabric_test
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GeoDjango 在导入 PostGIS backend 时就需要宿主机能够加载 GDAL/GEOS。
+      # PostgreSQL 服务容器带有 PostGIS，并不代表 GitHub Runner 主机自动拥有这些动态库。
+      - name: 安装 GeoDjango 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev libgeos-dev
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 安装 Python 依赖
+        run: uv sync --group dev
+
+      - name: Django 系统检查
+        run: uv run python backend/manage.py check
+
+      # 任何 models.py 变化如果没有同步生成 migration，都必须让 CI 失败。
+      # 这可以避免“开发环境能跑、全新安装却缺字段”的典型企业项目漂移问题。
+      - name: 检查模型与 migrations 是否同步
+        run: uv run python backend/manage.py makemigrations --check --dry-run
+
+      # 不能只依赖 pytest-django 帮忙临时建表。这里显式从空数据库执行正式 migration，
+      # 用于提前发现自定义 AUTH_USER_MODEL、跨 app 依赖、PostGIS 扩展等迁移顺序问题。
+      - name: 空库执行正式 migrations
+        run: uv run python backend/manage.py migrate --noinput
+
+      # 从这一阶段开始禁止 --nomigrations。测试必须和真实部署走相同的 schema 演进路径。
+      - name: Phase A 领域不变量测试
+        run: uv run pytest --cov=backend/spatial_fabric --cov-report=term-missing
+
+      # Provider 可以存在于 adapter/provider 层，但不能进入 Fabric Core 的模型字段和核心服务依赖。
+      - name: Provider 泄漏检查
+        run: uv run python scripts/check_provider_leaks.py
+
+      - name: Ruff 静态检查
+        run: uv run ruff check .
+
+      - name: 依赖漏洞审计
+        run: uv run pip-audit
+
+      # 开发机 Python 环境通过并不代表真正的交付镜像可构建。
+      # 在 PR 阶段构建生产镜像，可以提前发现 GDAL/GEOS、uv、复制路径等容器问题。
+      - name: 构建生产 Docker 镜像
+        run: docker build -t yujian-spatial-fabric:ci .
+
+      # 只验证“docker build 成功”仍不足以覆盖真实 Preview 启动链。
+      # 这里直接运行生产镜像，并使用 Render Preview 相同的 start-preview.sh：
+      # migrate -> Uvicorn -> readiness/OpenAPI/Swagger。这样可以在进 Render 前发现运行时错误。
+      - name: 启动生产镜像并验证 Preview API
+        run: |
+          set -euo pipefail
+
+          container_id="$({
+            docker run -d \
+              --network host \
+              -e PORT=18000 \
+              -e SF_SECRET_KEY=ci-container-only-not-production \
+              -e SF_ALLOWED_HOSTS=127.0.0.1,localhost \
+              -e SF_SECURE_SSL_REDIRECT=false \
+              -e SF_TRUST_PROXY_HEADERS=false \
+              -e POSTGRES_DB=spatial_fabric_test \
+              -e POSTGRES_USER=spatial_fabric \
+              -e POSTGRES_PASSWORD=spatial_fabric_test \
+              -e POSTGRES_HOST=127.0.0.1 \
+              -e POSTGRES_PORT=5432 \
+              yujian-spatial-fabric:ci \
+              ./scripts/start-preview.sh
+          })"
+
+          cleanup() {
+            docker logs "$container_id" || true
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:18000/health/ready > /tmp/readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+
+          test "$ready" -eq 1
+          cat /tmp/readiness.json
+          curl --fail --silent --show-error \
+            http://127.0.0.1:18000/api/schema/ > /tmp/openapi.yml
+          curl --fail --silent --show-error \
+            http://127.0.0.1:18000/api/docs/ > /tmp/swagger.html
+          test -s /tmp/openapi.yml
+          test -s /tmp/swagger.html
