@@ -335,7 +335,7 @@ class GroupMembership(UUID7Model, TimeStampedModel, ConcurrentModel):
         if errors:
             raise ValidationError(errors)
 
-    def is_currently_effective(self, *, at=None) -> bool:  # noqa: ANN001
+    def is_currently_effective(self, *, at=None) -> bool:
         """判断成员关系在某一时刻是否有效；授权查询仍应在数据库层过滤有效窗口。"""
 
         moment = at or timezone.now()
@@ -695,7 +695,7 @@ class RoleAssignment(UUID7Model, TimeStampedModel, ConcurrentModel):
         if errors:
             raise ValidationError(errors)
 
-    def is_currently_effective(self, *, at=None) -> bool:  # noqa: ANN001
+    def is_currently_effective(self, *, at=None) -> bool:
         """判断 RoleAssignment 在某时刻是否有效，不包含 B2 Policy/Entitlement/Quota 计算。"""
 
         moment = at or timezone.now()
