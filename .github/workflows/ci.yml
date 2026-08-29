@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/phase-a-foundation]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: spatial_fabric_test
+          POSTGRES_USER: spatial_fabric
+          POSTGRES_PASSWORD: spatial_fabric_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spatial_fabric -d spatial_fabric_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      SF_ENV: test
+      SF_SECRET_KEY: ci-only-not-production
+      POSTGRES_DB: spatial_fabric_test
+      POSTGRES_USER: spatial_fabric
+      POSTGRES_PASSWORD: spatial_fabric_test
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: Django 系统检查
+        run: uv run python backend/manage.py check
+
+      # Phase A 暂未提交 migration：这里让真实 Django 输出完整预览，便于下一提交按自动生成结果固化。
+      # 该步骤不作为失败门禁；正式 migration 合入后会替换为 makemigrations --check --dry-run。
+      - name: 预览 Phase A migrations
+        run: uv run python backend/manage.py makemigrations iam tenancy assets --dry-run --verbosity 3
+
+      - name: Phase A 领域不变量测试（临时跳过 migration）
+        run: uv run pytest --nomigrations --cov=backend/spatial_fabric --cov-report=term-missing
+
+      - name: Ruff 静态检查
+        run: uv run ruff check .
+
+      - name: 依赖漏洞审计
+        run: uv run pip-audit
