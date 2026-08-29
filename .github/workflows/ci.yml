@@ -56,12 +56,24 @@ jobs:
       - name: Django 系统检查
         run: uv run python backend/manage.py check
 
-      # Phase A 暂未提交 migration：这里让真实 Django 输出完整预览，便于下一提交按自动生成结果固化。
-      # 正式 migration 合入后将替换为严格的 makemigrations --check --dry-run。
-      - name: 预览 Phase A migrations
-        run: uv run python backend/manage.py makemigrations iam tenancy assets --dry-run --verbosity 3
+      # 这是首批 migration 固化前的一次性审计步骤：让与 CI 完全一致的 Django 版本实际生成
+      # migration，再作为 artifact 取回审查。下一提交会把这里替换成严格的 --check --dry-run，
+      # 不会长期在 CI 中动态生成 migration。
+      - name: 生成 Phase A migrations（一次性审计）
+        run: uv run python backend/manage.py makemigrations iam tenancy assets --verbosity 2
 
-      - name: Phase A 领域不变量测试（临时跳过 migration）
+      - name: 导出 Django 生成的 migrations
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-a-migrations
+          path: |
+            backend/spatial_fabric/iam/migrations
+            backend/spatial_fabric/tenancy/migrations
+            backend/spatial_fabric/assets/migrations
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Phase A 领域不变量测试（迁移固化前临时跳过 migration）
         run: uv run pytest --nomigrations --cov=backend/spatial_fabric --cov-report=term-missing
 
       - name: Ruff 静态检查
