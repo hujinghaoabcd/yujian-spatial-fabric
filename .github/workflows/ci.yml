@@ -37,19 +37,27 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # GeoDjango 的 PostGIS backend 在 Python import 阶段就需要宿主机能够加载 GDAL/GEOS。
+      # 数据库容器里包含 PostGIS 并不意味着 GitHub Runner 主机自动拥有这些动态库。
+      - name: 安装 GeoDjango 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev libgeos-dev
+
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
           enable-cache: true
 
-      - name: 安装依赖
+      - name: 安装 Python 依赖
         run: uv sync --group dev
 
       - name: Django 系统检查
         run: uv run python backend/manage.py check
 
       # Phase A 暂未提交 migration：这里让真实 Django 输出完整预览，便于下一提交按自动生成结果固化。
-      # 该步骤不作为失败门禁；正式 migration 合入后会替换为 makemigrations --check --dry-run。
+      # 正式 migration 合入后将替换为严格的 makemigrations --check --dry-run。
       - name: 预览 Phase A migrations
         run: uv run python backend/manage.py makemigrations iam tenancy assets --dry-run --verbosity 3
 
