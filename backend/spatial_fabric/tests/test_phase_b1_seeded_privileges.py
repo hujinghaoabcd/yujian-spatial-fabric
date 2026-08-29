@@ -4,6 +4,7 @@
 """
 
 import pytest
+
 from spatial_fabric.iam.models import Privilege, PrivilegeCategory, PrivilegeRiskLevel
 
 
