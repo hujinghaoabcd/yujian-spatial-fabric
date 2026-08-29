@@ -1,0 +1,83 @@
+name: Export Phase B migrations
+
+on:
+  push:
+    branches: [feat/phase-b-iam-governance]
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: spatial_fabric_test
+          POSTGRES_USER: spatial_fabric
+          POSTGRES_PASSWORD: spatial_fabric_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spatial_fabric -d spatial_fabric_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      SF_ENV: test
+      SF_SECRET_KEY: phase-b-migration-export-only
+      POSTGRES_DB: spatial_fabric_test
+      POSTGRES_USER: spatial_fabric
+      POSTGRES_PASSWORD: spatial_fabric_test
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GeoDjango 导入 PostGIS backend 时需要 Runner 主机本身能够加载 GDAL/GEOS。
+      - name: 安装 GeoDjango 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev libgeos-dev
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 安装 Python 依赖
+        run: uv sync --group dev
+
+      - name: Django 系统检查
+        run: uv run python backend/manage.py check
+
+      # 正式 migration 由这一固定 Django 环境生成，不人工猜测字段、约束和依赖顺序。
+      - name: 生成 Phase B IAM migration
+        run: uv run python backend/manage.py makemigrations iam --noinput --verbosity 2
+
+      - name: 展示生成的 migration
+        run: |
+          ls -la backend/spatial_fabric/iam/migrations
+          sed -n '1,260p' backend/spatial_fabric/iam/migrations/0002_*.py
+
+      # 在提交 migration 前先证明 Django 自己生成的文件能从空 PostGIS 库完整执行。
+      - name: 空库执行完整 migrations
+        run: uv run python backend/manage.py migrate --noinput
+
+      - name: 运行 Phase A + Phase B1 不变量测试
+        run: uv run pytest backend/spatial_fabric/tests -q
+
+      - name: Ruff 静态检查
+        run: uv run ruff check backend/spatial_fabric/iam/models.py backend/spatial_fabric/tests/test_phase_b1_authorization_invariants.py
+
+      - name: 打包 Django 生成的 migration
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-b-iam-migrations
+          path: backend/spatial_fabric/iam/migrations/0002_*.py
+          if-no-files-found: error
+          retention-days: 3
