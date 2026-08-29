@@ -68,7 +68,7 @@ jobs:
         run: uv run python backend/manage.py migrate --noinput
 
       # 从这一阶段开始禁止 --nomigrations。测试必须和真实部署走相同的 schema 演进路径。
-      - name: Phase A 领域不变量测试
+      - name: 领域不变量测试
         run: uv run pytest --cov=backend/spatial_fabric --cov-report=term-missing
 
       # Provider 可以存在于 adapter/provider 层，但不能进入 Fabric Core 的模型字段和核心服务依赖。
@@ -77,6 +77,10 @@ jobs:
 
       - name: Ruff 静态检查
         run: uv run ruff check .
+
+      # pyproject 已启用 mypy strict；企业级门禁必须真的执行它，而不能只保留配置文件。
+      - name: Mypy 严格类型检查
+        run: uv run mypy backend
 
       - name: 依赖漏洞审计
         run: uv run pip-audit
