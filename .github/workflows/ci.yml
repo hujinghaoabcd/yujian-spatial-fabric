@@ -85,3 +85,52 @@ jobs:
       # 在 PR 阶段构建生产镜像，可以提前发现 GDAL/GEOS、uv、复制路径等容器问题。
       - name: 构建生产 Docker 镜像
         run: docker build -t yujian-spatial-fabric:ci .
+
+      # 只验证“docker build 成功”仍不足以覆盖真实 Preview 启动链。
+      # 这里直接运行生产镜像，并使用 Render Preview 相同的 start-preview.sh：
+      # migrate -> Uvicorn -> readiness/OpenAPI/Swagger。这样可以在进 Render 前发现运行时错误。
+      - name: 启动生产镜像并验证 Preview API
+        run: |
+          set -euo pipefail
+
+          container_id="$({
+            docker run -d \
+              --network host \
+              -e PORT=18000 \
+              -e SF_SECRET_KEY=ci-container-only-not-production \
+              -e SF_ALLOWED_HOSTS=127.0.0.1,localhost \
+              -e SF_SECURE_SSL_REDIRECT=false \
+              -e SF_TRUST_PROXY_HEADERS=false \
+              -e POSTGRES_DB=spatial_fabric_test \
+              -e POSTGRES_USER=spatial_fabric \
+              -e POSTGRES_PASSWORD=spatial_fabric_test \
+              -e POSTGRES_HOST=127.0.0.1 \
+              -e POSTGRES_PORT=5432 \
+              yujian-spatial-fabric:ci \
+              ./scripts/start-preview.sh
+          })"
+
+          cleanup() {
+            docker logs "$container_id" || true
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:18000/health/ready > /tmp/readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+
+          test "$ready" -eq 1
+          cat /tmp/readiness.json
+          curl --fail --silent --show-error \
+            http://127.0.0.1:18000/api/schema/ > /tmp/openapi.yml
+          curl --fail --silent --show-error \
+            http://127.0.0.1:18000/api/docs/ > /tmp/swagger.html
+          test -s /tmp/openapi.yml
+          test -s /tmp/swagger.html
