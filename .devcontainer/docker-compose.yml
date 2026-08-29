@@ -1,0 +1,40 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    command: sleep infinity
+    volumes:
+      - ..:/workspaces/yujian-spatial-fabric:cached
+    environment:
+      SF_ENV: local
+      SF_DEBUG: "true"
+      SF_SECRET_KEY: codespaces-preview-development-only
+      SF_ALLOWED_HOSTS: localhost,127.0.0.1,.app.github.dev
+      SF_CSRF_TRUSTED_ORIGINS: https://*.app.github.dev
+      POSTGRES_DB: spatial_fabric
+      POSTGRES_USER: spatial_fabric
+      POSTGRES_PASSWORD: spatial_fabric_codespaces
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      SF_LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: spatial_fabric
+      POSTGRES_USER: spatial_fabric
+      POSTGRES_PASSWORD: spatial_fabric_codespaces
+    volumes:
+      - sf_codespaces_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spatial_fabric -d spatial_fabric"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  sf_codespaces_postgres:
