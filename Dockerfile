@@ -28,7 +28,8 @@ COPY backend ./backend
 COPY scripts ./scripts
 
 # 生产镜像不安装 dev group，并关闭 editable 安装，减少运行环境的不确定性。
-RUN uv sync --no-dev --no-editable --frozen=false \
+# 当前仓库尚未固化 uv.lock，因此这里不使用 --frozen；待锁文件正式纳入仓库后再切换为冻结安装。
+RUN uv sync --no-dev --no-editable \
     && chmod +x /app/scripts/start-preview.sh
 
 ENV PATH="/app/.venv/bin:$PATH" \
