@@ -3,7 +3,7 @@
 > 状态：**Implementation Spec（非 FINAL 架构宪章）**  
 > 分支：`feat/map-kernel-design`  
 > 上位约束：`00_PROJECT_HANDOFF.md` 中冻结的 `Asset ≠ AssetVersion ≠ Artifact ≠ Distribution` 与 `Dataset ≠ Layer ≠ Style ≠ Map ≠ Scene`。  
-> 本文只把已冻结边界映射成可落地的 Django/PostgreSQL/PostGIS 结构；若未来同步进仓库的三份 FINAL 全文与本文冲突，以 FINAL 为准。
+> 本文只把已冻结边界映射成可落地的 Django/PostgreSQL/PostGIS 结构；未来若同步进仓库的三份 FINAL 全文与本文冲突，以 FINAL 为准。
 
 ## 1. 目标
 
@@ -11,14 +11,17 @@
 
 地图内核必须同时满足：
 
-1. GeoNode 类平台成熟的 Dataset / Layer / Map 资源管理体验；
-2. Spatial Fabric 已冻结的统一 Asset Kernel；
-3. 2D Map 与 3D Scene 分离；
-4. Dataset 与 Layer 分离；
-5. Style 可独立版本化、复用和由 GeoAgent 操作；
-6. 同一个数据版本可以有 PostGIS、COG、PMTiles、MVT、WMS、3D Tiles 等多种消费形态；
+1. 复用 GeoNode 类平台成熟的 Dataset / Layer / Map 资源管理经验；
+2. 不破坏 Spatial Fabric 已冻结的统一 Asset Kernel；
+3. Dataset 与 Layer 分离；
+4. 2D Map 与 3D Scene 分离；
+5. Style 可独立版本化、复用，并能被 GeoAgent 以语义方式操作；
+6. 同一个数据版本可以拥有 PostGIS、COG、GeoParquet、PMTiles、MVT、WMS、3D Tiles、Stream 等多种消费形态；
 7. Provider endpoint 可以重建或迁移，而不改变资产语义身份；
-8. 计算结果能够自动进入地图链路，即“计算即地图”。
+8. 计算结果能够自动进入地图链路，即“计算即地图”；
+9. 道路矢量、科学栅格、NetCDF/Zarr、多源专题图、实时流和 3D Tiles 必须落在同一套模型中，而不是为每类数据重新造一套表。
+
+---
 
 ## 2. 不新增 `Representation` 根对象
 
@@ -39,12 +42,12 @@ AssetVersion
 它已经可以表达：
 
 ```text
-PostGIS
-GeoParquet
-COG
-PMTiles
-MVT
-WMS / WMTS / WFS
+PostGIS / Database
+GeoParquet / File
+COG / Object
+PMTiles / Tile Archive
+MVT / Web Service
+WMS / WFS / WMTS
 3D Tiles
 Stream
 Catalog
@@ -53,7 +56,7 @@ Model Endpoint
 
 因此地图阶段**禁止**再建立与其同义的 `Representation` / `SpatialRepresentation` Aggregate Root。
 
-正确扩展方式是：
+正确扩展方式：
 
 ```text
 Distribution
@@ -66,13 +69,15 @@ Distribution
 - Asset Kernel 继续保持通用；
 - 地图模块获得强类型、可查询的空间字段；
 - 不把 TiTiler / Martin / GeoServer / Cesium ion 等 Provider 写进 Core Model；
-- endpoint 重建时不需要修改 Dataset/Layer/Map 的语义身份。
+- endpoint 重建时不需要修改 Dataset / Layer / Map 的语义身份。
+
+---
 
 ## 3. 核心建模原则：Logical Asset + Version Typed Facet
 
-Dataset、Layer、Style、Map、Scene 都是**可复用、可授权、可分享、可审计、可版本化**资源，因此它们都使用已有 `Asset` / `AssetVersion` 作为统一身份和生命周期。
+Dataset、Layer、Style、Map、Scene 都是**可复用、可授权、可分享、可审计、可版本化**资源，因此统一复用已有 `Asset` / `AssetVersion`。
 
-但禁止用 Django multi-table inheritance 把 Asset 继承成五棵独立根表。
+禁止用 Django multi-table inheritance 把 Asset 继承成五棵独立根表。
 
 采用：
 
@@ -96,19 +101,19 @@ Asset(asset_type="scene")  → AssetVersion → SceneVersionProfile
 理由：
 
 1. Tenant / Workspace / Project / owner / classification / alias / publication 生命周期全部复用 Asset Kernel；
-2. 空间领域字段仍然有数据库强类型和索引，不把所有内容塞入 `AssetVersion.spec`；
-3. 新资产类型可以继续通过 Typed Facet 扩展，不修改 Asset 核心表；
-4. 避免 Dataset/Map/Model/Workflow 各自重复实现 ownership、version、alias、permission。
+2. 空间领域字段仍有数据库强类型和索引，不把所有内容塞入 `AssetVersion.spec`；
+3. 新资产类型可继续通过 Typed Facet 扩展，不修改 Asset 核心表；
+4. 避免 Dataset / Map / Model / Workflow 各自重复实现 ownership、version、alias、permission。
 
-`AssetVersion.spec` 仍保留用于低频、可扩展、schema 驱动配置；高频查询、关系完整性、空间索引所需字段进入 Typed Facet。
+`AssetVersion.spec` 继续承载低频、可扩展、schema 驱动配置；高频查询、关系完整性、空间索引所需字段进入 Typed Facet / Binding 表。
+
+---
 
 ## 4. DatasetVersionProfile
 
 建议表：`sf_dataset_version_profile`
 
 一条记录必须且只能对应一个 `asset_type=dataset` 的 AssetVersion。
-
-第一版字段：
 
 ```text
 id                      UUIDv7
@@ -118,12 +123,11 @@ kind                    VECTOR | RASTER | MULTIDIMENSIONAL |
 geometry_type           POINT | MULTIPOINT | LINESTRING | MULTILINESTRING |
                         POLYGON | MULTIPOLYGON | GEOMETRYCOLLECTION | MIXED | NONE
 native_crs              string，例如 EPSG:4326
-spatial_extent          Geometry/Polygon nullable
-spatial_extent_crs      string
+spatial_extent          MultiPolygonField(4326) nullable
 start_time              timestamptz nullable
 end_time                timestamptz nullable
 temporal_resolution     string nullable
-spatial_resolution      string/json nullable
+spatial_resolution      jsonb
 feature_count           bigint nullable
 row_count               bigint nullable
 schema_summary          jsonb
@@ -133,19 +137,33 @@ units                    jsonb
 extra_metadata          jsonb
 ```
 
-### 4.1 为什么 extent 要进入 PostGIS 字段
+### 4.1 为什么 extent 必须是 PostGIS 字段
 
-`bbox` 不能只存在 JSON 中。至少需要一个可 GiST/SP-GiST 索引的空间范围字段，用于：
+`bbox` 不能只存在 JSON 中。至少要有可 GiST 索引的规范化 WGS84 footprint，用于：
 
 - 地图初始视图；
 - 空间目录检索；
 - “查找南京范围内的所有数据”；
-- Dataset 自动匹配 Map/Scene；
+- Dataset 自动匹配 Map / Scene；
 - GeoAgent spatial discovery。
 
-第一版可统一使用 `PolygonField(srid=4326)` 保存规范化 WGS84 extent；原生 CRS 与原生 bbox 可继续写 metadata。
+采用 `MultiPolygonField(srid=4326)` 而不是单一 Polygon，可以表达跨 180° 经线时拆分后的多个范围片段。原生 CRS / 原生 bbox 继续保存在 metadata 中。
 
-### 4.2 不在 DatasetProfile 中保存 Provider 字段
+### 4.2 实时 Dataset 的版本含义
+
+`DatasetVersion` 对实时流表示**流定义 / schema / 语义版本**，不是每一条实时消息都生成新版本。
+
+```text
+traffic-stream DatasetVersion v3
+    ↓
+Distribution(mutability=LIVE)
+    ↓
+连续事件
+```
+
+只有 schema、来源语义、关键单位等定义变化时才产生新的 DatasetVersion。
+
+### 4.3 禁止 Provider 字段进入 DatasetProfile
 
 禁止：
 
@@ -157,11 +175,15 @@ martin_table
 neon_project_id
 ```
 
-这些属于 Distribution / Provider / ServiceDeployment 层。
+这些属于 Distribution / Provider / ServiceDeployment / ServiceInstance 层。
+
+---
 
 ## 5. SpatialDistributionProfile
 
 建议表：`sf_spatial_distribution_profile`
+
+它是 `Distribution` 的空间 Typed Facet，不是新的 Aggregate Root。
 
 ```text
 id                      UUIDv7
@@ -174,25 +196,25 @@ format                   GEOJSON | GPKG | GEOPARQUET | COG | NETCDF | ZARR |
 protocol                 FILE | S3 | HTTP | XYZ | TMS | MVT | WMS | WFS |
                         WMTS | OGC_API_FEATURES | STAC | QUERY_API | STREAM
 crs                      string nullable
-bounds                   PolygonField(4326) nullable
+bounds                   MultiPolygonField(4326) nullable
 min_zoom                 smallint nullable
 max_zoom                 smallint nullable
 tile_matrix_set          string nullable
-variable                 string nullable
-band                     string nullable
 content_encoding         string nullable
 capabilities             jsonb
 render_hints             jsonb
 ```
 
-### 5.1 Distribution 与 ServiceInstance 的边界
+变量、band、时间片等**消费选择**不应强制固定在 Distribution 级别；同一 NetCDF/Zarr Distribution 可以由不同 LayerSourceBinding 选择不同变量。
+
+### 5.1 Distribution 与 ServiceInstance
 
 ```text
 Distribution = “这个 AssetVersion 有一种 MVT / COG / WMS 消费形态”
 ServiceInstance = “当前由哪个运行实例真正提供该能力”
 ```
 
-因此未来允许：
+未来允许：
 
 ```text
 LayerVersion
@@ -204,20 +226,22 @@ Distribution(MVT)
 ServiceInstance(Martin instance A)
 ```
 
-Martin A 换成 Martin B，不应生成新的 DatasetVersion 或 LayerVersion；只有消费形态语义本身改变时才产生新的 Distribution。
+Martin A 换成 Martin B，不应生成新的 DatasetVersion 或 LayerVersion；只有消费形态语义本身变化时才产生新的 Distribution。
+
+---
 
 ## 6. LayerVersionProfile
 
 建议表：`sf_layer_version_profile`
 
-Layer 不是 Dataset 的别名。
+Layer 不是 Dataset 的别名：
 
 ```text
 Dataset = 数据是什么
-Layer   = 数据如何作为地图图层被消费和表达
+Layer   = 数据如何作为地图/场景图层被消费和表达
 ```
 
-一个 DatasetVersion 可以产生多个 LayerVersion，例如道路数据：
+同一个 DatasetVersion 可生成多个 LayerVersion：
 
 ```text
 road_dataset_v3
@@ -227,32 +251,90 @@ road_dataset_v3
  └── congestion_layer_v4
 ```
 
-建议字段：
+LayerVersionProfile 本身只保存 Layer 级语义：
 
 ```text
 id                      UUIDv7
 asset_version_id        FK AssetVersion UNIQUE
 layer_kind              VECTOR | RASTER | TERRAIN | HEATMAP |
-                        TRAJECTORY | POINT_CLOUD | THREE_D | LIVE
-source_dataset_version  FK AssetVersion
-source_selector         jsonb
-source_policy           jsonb
+                        TRAJECTORY | VECTOR_FIELD | POINT_CLOUD |
+                        THREE_D | LIVE | COMPOSITE
 query_spec              jsonb
 interaction_spec        jsonb
 legend_spec             jsonb
+render_semantics        jsonb
 ```
 
-### 6.1 Layer 持久化绑定 DatasetVersion，而不是固定 endpoint
+**不再**在 LayerVersionProfile 中放单个 `source_dataset_version`。
 
-Published LayerVersion 的主要数据源必须解析为**具体 Dataset AssetVersion**，而不是：
+原因：一个 LayerVersion 可能合法依赖多个 DatasetVersion。
+
+典型例子：
 
 ```text
-https://server-123/tiles/{z}/{x}/{y}.pbf
+道路 geometry DatasetVersion
+        +
+实时交通属性 DatasetVersion
+        ↓
+拥堵专题 LayerVersion
 ```
 
-原因：endpoint 是运行/Provider 状态，可以迁移；DatasetVersion 是可追溯的语义输入。
+或：
 
-`source_policy` 用来表达 Layer 需要的消费能力，例如：
+```text
+WRF DatasetVersion
+ selector=[U10, V10]
+        ↓
+风矢量 LayerVersion
+```
+
+---
+
+## 7. LayerSourceBinding
+
+建议表：`sf_layer_source_binding`
+
+这是 Layer 与 DatasetVersion 之间的正式多源关系。
+
+```text
+id                      UUIDv7
+layer_version_id        FK AssetVersion
+source_dataset_version  FK AssetVersion
+binding_key             slug/string
+role                    PRIMARY | JOIN | MASK | REFERENCE | AUXILIARY
+selector_spec           jsonb
+join_spec               jsonb
+source_policy           jsonb
+priority                int
+```
+
+约束：
+
+```text
+UNIQUE(layer_version_id, binding_key)
+```
+
+`selector_spec` 示例：
+
+```json
+{
+  "variables": ["U10", "V10"],
+  "time": "2026-08-30T08:00:00Z",
+  "level": "surface"
+}
+```
+
+`join_spec` 示例：
+
+```json
+{
+  "left_key": "road_id",
+  "right_key": "road_id",
+  "join_type": "left"
+}
+```
+
+`source_policy` 只声明需要的消费能力，不绑定具体 endpoint：
 
 ```json
 {
@@ -262,9 +344,19 @@ https://server-123/tiles/{z}/{x}/{y}.pbf
 }
 ```
 
-运行时 Resolver 再从 DatasetVersion 的可用 Distribution 中选择合适形态。
+运行时 Resolver 再从对应 DatasetVersion 的 Distribution 中选择实际消费形态。
 
-### 6.2 Job 输出如何进入 Layer
+### 7.1 为什么不能直接持久化 endpoint
+
+Published LayerVersion 的 source 必须最终解析为具体 Dataset AssetVersion，而不是：
+
+```text
+https://server-123/tiles/{z}/{x}/{y}.pbf
+```
+
+endpoint 是运行状态，可以迁移；DatasetVersion 才是可追溯的语义输入。
+
+### 7.2 Job 输出如何进入 Layer
 
 持久 Map 不直接长期引用匿名临时文件。
 
@@ -281,39 +373,36 @@ Result Dataset AssetVersion
    ↓
 Distribution
    ↓
+LayerSourceBinding
+   ↓
 LayerVersion
    ↓
-Map
+Map / Scene
 ```
 
-如果只是运行中的临时预览，可以允许前端使用 ephemeral Distribution；一旦保存 Map，则必须先把结果提升为稳定 AssetVersion。
+运行中的即时预览可以临时使用 ephemeral Distribution；一旦保存为持久 Map/Scene，则必须先把结果提升为稳定 AssetVersion。
 
-这保证 provenance、权限和重跑都不会因为临时 URL 消失而断裂。
+---
 
-## 7. StyleVersionProfile
+## 8. StyleVersionProfile
 
 建议表：`sf_style_version_profile`
 
-Style 是独立 Asset，而不是 Layer/Map JSON 中的一段不可复用颜色配置。
-
-字段：
+Style 是独立 Asset，而不是 Layer/Map JSON 中一段不可复用颜色配置。
 
 ```text
 id                      UUIDv7
 asset_version_id        FK AssetVersion UNIQUE
 style_kind              VECTOR | RASTER | SYMBOL | HEATMAP |
-                        CLASSIFIED | CONTINUOUS | THREE_D | COMPOSITE
+                        CLASSIFIED | CONTINUOUS | VECTOR_FIELD |
+                        THREE_D | COMPOSITE
 semantic_spec           jsonb
-renderer_family         MAPLIBRE | SLD | CESIUM | GENERIC
-renderer_spec           jsonb
 legend_spec             jsonb
 ```
 
-### 7.1 Semantic Style 与 Renderer Spec 分层
+### 8.1 Semantic Style 是主语义
 
 GeoAgent 不应该被迫直接生成大量 MapLibre paint JSON。
-
-例如内部语义：
 
 ```json
 {
@@ -325,67 +414,91 @@ GeoAgent 不应该被迫直接生成大量 MapLibre paint JSON。
 }
 ```
 
-Renderer adapter 可将其编译成：
+这一份语义可以同时编译到多个渲染器，因此**禁止**在 StyleVersionProfile 上放单一 `renderer_family` 字段。
+
+---
+
+## 9. StyleRendererVariant
+
+建议表：`sf_style_renderer_variant`
+
+它是 StyleVersion 的依赖实体，不是新的 Asset。
 
 ```text
-MapLibre style fragment
-SLD
-Cesium material
-server-side ColorMap
+id                      UUIDv7
+style_version_id        FK AssetVersion
+renderer_family         MAPLIBRE | SLD | CESIUM | SERVER_COLORMAP | GENERIC
+variant_key             string
+renderer_spec           jsonb
+compiled_artifact       FK Artifact nullable
+priority                int
 ```
 
-因此：
+约束：
 
 ```text
-Semantic Style = 业务/科学表达意图
-Renderer Spec  = 某渲染器的具体实现
+UNIQUE(style_version_id, renderer_family, variant_key)
 ```
 
-## 8. LayerStyleBinding
+这样同一个 StyleVersion 可以拥有：
 
-不要把 Style FK 直接塞进 LayerVersionProfile，原因是：
+```text
+semantic style
+ ├── MapLibre variant
+ ├── SLD variant
+ ├── Cesium variant
+ └── server ColorMap variant
+```
 
-- 一个 Layer 可以有多个样式；
-- Map 中可以临时覆盖默认样式；
-- default / alternate / print / dark 等关系有语义。
+Renderer-specific 内容只是语义样式的编译结果或实现，不反过来成为 Style 的业务身份。
+
+---
+
+## 10. LayerStyleBinding
 
 建议表：`sf_layer_style_binding`
+
+不要把 Style FK 直接塞进 LayerVersionProfile：
+
+- 一个 Layer 可以有多个样式；
+- Map/Scene 中可以覆盖默认样式；
+- default / alternate / dark / print 等关系本身有语义。
 
 ```text
 id                      UUIDv7
 layer_version_id        FK AssetVersion
 style_version_id        FK AssetVersion
 role                    DEFAULT | ALTERNATE | FALLBACK
-is_default              bool
+binding_key             string
 priority                int
 ```
 
 约束：
 
-- 两端必须同 tenant 或引用平台级共享资产；
-- `layer_version_id` 必须属于 layer Asset；
-- `style_version_id` 必须属于 style Asset；
-- 每个 LayerVersion 最多一个 DEFAULT。
+- 两端必须同 tenant，或引用允许共享的平台级资产；
+- layer_version 必须属于 layer Asset；
+- style_version 必须属于 style Asset；
+- 每个 LayerVersion 最多一个 `role=DEFAULT`；
+- `UNIQUE(layer_version_id, binding_key)`。
 
-这些跨 asset_type 约束第一版由领域服务 + 测试保证；必要时再升级数据库 trigger。
+跨 `Asset.asset_type` 约束第一版由 Domain Service + model validation + tests 保证；必要时再升级数据库 trigger。
 
-## 9. MapVersionProfile
+---
+
+## 11. MapVersionProfile
 
 建议表：`sf_map_version_profile`
 
 Map 是**保存的二维空间组合**，不是截图。
-
-字段：
 
 ```text
 id                      UUIDv7
 asset_version_id        FK AssetVersion UNIQUE
 projection              string, default EPSG:3857
 camera_spec             jsonb
-basemap_spec            jsonb
 interaction_spec        jsonb
 ui_spec                  jsonb
-extent                   PolygonField(4326) nullable
+extent                   MultiPolygonField(4326) nullable
 ```
 
 典型 camera：
@@ -399,16 +512,44 @@ extent                   PolygonField(4326) nullable
 }
 ```
 
-## 10. MapLayerBinding
+### 11.1 Basemap 也是 Layer
 
-Map 和 Layer 是 many-to-many，但中间关系本身有大量语义，必须建正式实体。
+MapVersionProfile **不保存 `basemap_url` 或 `basemap_spec` 外部 Provider 配置**。
 
-建议表：`sf_map_layer_binding`
+底图应建模成正常 Layer Asset：
+
+```text
+OSM / 企业底图 / 卫星影像 Dataset
+   ↓
+Distribution
+   ↓
+Basemap LayerVersion
+   ↓
+MapLayerBinding(role=BASEMAP)
+```
+
+系统默认底图可以是平台级共享 Asset。
+
+这样底图仍然具备：
+
+- 权限；
+- 版本；
+- provenance / 来源说明；
+- Provider 可替换；
+- 离线/内网替换能力。
+
+---
+
+## 12. MapLayerBinding
+
+Map 和 Layer 是 many-to-many，但中间关系自身有大量语义，必须建正式实体。
 
 ```text
 id                      UUIDv7
 map_version_id          FK AssetVersion
 layer_version_id        FK AssetVersion
+binding_key             string
+role                    BASEMAP | CONTENT | OVERLAY | ANNOTATION
 order_index             int
 visible                 bool
 opacity                 decimal
@@ -424,31 +565,26 @@ render_override         jsonb
 约束：
 
 ```text
-UNIQUE(map_version_id, layer_version_id, order_index?)
+UNIQUE(map_version_id, binding_key)
 UNIQUE(map_version_id, order_index)
 0 <= opacity <= 1
 min_zoom <= max_zoom
 ```
 
-是否允许同一个 LayerVersion 在同一 Map 中出现多次：**允许**。
+允许同一个 LayerVersion 在同一 Map 中出现多次。
 
-例：同一道路 Layer 可分别以“底部灰色道路”和“顶部拥堵着色”出现，因此不能简单 `UNIQUE(map_version, layer_version)`。
-
-推荐增加稳定 `binding_key`：
+例如：
 
 ```text
-binding_key = roads-base
-binding_key = roads-congestion
+roads-base        → 同一个 roads LayerVersion，灰色底层
+roads-congestion  → 同一个 roads LayerVersion，顶部拥堵着色
 ```
 
-最终唯一约束：
+两次出现通过不同 `binding_key` 和 override 区分。
 
-```text
-UNIQUE(map_version_id, binding_key)
-UNIQUE(map_version_id, order_index)
-```
+---
 
-## 11. SceneVersionProfile 与 SceneLayerBinding
+## 13. SceneVersionProfile
 
 Scene 与 Map 必须分开，不做一个万能 `Map3D`。
 
@@ -461,100 +597,124 @@ Scene 面向：
 - 地下空间；
 - 污染羽流；
 - 三维气象场；
-- 数字孪生/仿真结果。
+- 数字孪生 / 仿真结果。
 
-建议：
+建议表：`sf_scene_version_profile`
 
 ```text
-sf_scene_version_profile
-sf_scene_layer_binding
+id                      UUIDv7
+asset_version_id        FK AssetVersion UNIQUE
+camera_spec             jsonb
+lighting_spec           jsonb
+time_spec               jsonb
+scene_environment_spec  jsonb
+extent                   MultiPolygonField(4326) nullable
 ```
 
-SceneVersionProfile：
+### 13.1 Terrain 也通过 Layer 进入 Scene
+
+SceneVersionProfile 不保存 `terrain_url`。
 
 ```text
-asset_version_id
-camera_spec
-lighting_spec
-terrain_spec
-time_spec
-scene_environment_spec
-extent
+DEM / terrain Dataset
+  ↓
+Terrain Distribution
+  ↓
+Terrain LayerVersion
+  ↓
+SceneLayerBinding(role=TERRAIN)
 ```
 
-SceneLayerBinding：
+这样 Terrain 和普通 3D 内容共用一致的 Asset / Distribution / Permission / Provenance 机制。
+
+---
+
+## 14. SceneLayerBinding
+
+建议表：`sf_scene_layer_binding`
 
 ```text
-scene_version_id
-layer_version_id
-binding_key
-order_index
-visible
-opacity
-style_override_version
-transform_spec
-clipping_spec
-temporal_selector
-interaction_override
+id                      UUIDv7
+scene_version_id        FK AssetVersion
+layer_version_id        FK AssetVersion
+binding_key             string
+role                    TERRAIN | BASEMAP | CONTENT | EFFECT | ANNOTATION
+order_index             int
+visible                 bool
+opacity                 decimal
+style_override_version  FK AssetVersion nullable
+transform_spec          jsonb
+clipping_spec           jsonb
+temporal_selector       jsonb
+interaction_override    jsonb
 ```
 
-第一阶段可只建模型与 contract，不要求立即接 Cesium。
-
-## 12. 关系总图
+约束：
 
 ```text
-                           Asset
-                             │
-                        AssetVersion
-                             │
-       ┌───────────────┬─────┴─────┬───────────────┐
-       │               │           │               │
- DatasetVersion   LayerVersion  StyleVersion   MapVersion
-    Profile          Profile       Profile       Profile
-       │               │             │             │
-       │               ├──── LayerStyleBinding ────┤
-       │               │                           │
-       └── source ──────┘                    MapLayerBinding
-       │                                           │
-       │                                           │
-       ├── Artifact                                │
-       │                                           │
-       └── Distribution ── SpatialDistributionProfile
+UNIQUE(scene_version_id, binding_key)
+UNIQUE(scene_version_id, order_index)
+0 <= opacity <= 1
+```
 
-AssetVersion ── SceneVersionProfile
+第一阶段可先完成领域模型与 contract，不要求立即接 Cesium。
+
+---
+
+## 15. 关系总图
+
+```text
+                              Asset
+                                │
+                           AssetVersion
+                                │
+          ┌────────────┬────────┼──────────┬──────────┐
+          │            │        │          │          │
+       Dataset       Layer    Style       Map       Scene
+       Profile      Profile   Profile    Profile     Profile
+          │            │        │          │          │
+          │            │        ├─ StyleRendererVariant
+          │            │        │
+          │      LayerStyleBinding
+          │            │
+          └─ LayerSourceBinding
                        │
-                 SceneLayerBinding
+                       ├────────── MapLayerBinding ───── Map
                        │
-                  LayerVersion
+                       └────────── SceneLayerBinding ─── Scene
+
+Dataset AssetVersion
+    ├── Artifact
+    └── Distribution ── SpatialDistributionProfile
 ```
 
-更准确的语义链：
+关键语义链：
 
 ```text
-Dataset Asset
-  ↓ exact version
-DatasetVersionProfile
-  ↓ available forms
-Distribution + SpatialDistributionProfile
-
 DatasetVersion
-  ↓ semantic source
-Layer AssetVersion
-  ↓ style bindings
-Style AssetVersion
+  ↓ available forms
+Distribution
+
+DatasetVersion(s)
+  ↓ LayerSourceBinding
+LayerVersion
+  ↓ LayerStyleBinding
+StyleVersion
 
 LayerVersion
-  ↓ map composition binding
-Map AssetVersion
+  ↓ MapLayerBinding
+MapVersion
 
 LayerVersion
-  ↓ scene composition binding
-Scene AssetVersion
+  ↓ SceneLayerBinding
+SceneVersion
 ```
 
-## 13. Asset type keys
+---
 
-第一版使用稳定 namespaced key：
+## 16. Asset type keys
+
+第一版稳定 key：
 
 ```text
 dataset
@@ -564,13 +724,14 @@ map
 scene
 ```
 
-未来专业类型仍通过 trait/profile/package 扩展：
+专业差异通过 trait / profile / schema / package 扩展：
 
 ```text
 dataset + traits=[spatial, temporal]
 dataset + traits=[raster, remote_sensing]
 dataset + traits=[multidimensional, meteorology]
 layer + traits=[live]
+layer + traits=[vector_field]
 scene + traits=[simulation]
 ```
 
@@ -585,33 +746,35 @@ traffic_layer
 
 这些属于 metadata、schema、package 或行业层，不属于核心 asset_type。
 
-## 14. 版本与可变性
+---
 
-### 14.1 必须产生新版本
+## 17. 版本与可变性
 
-下列变化改变语义，应创建新 AssetVersion：
+### 17.1 必须产生新 AssetVersion
 
-- Dataset 数据内容发生变化；
-- Layer source selector/query 发生语义变化；
-- Style 分类规则/色带语义发生变化；
-- Map 保存的 layer composition 发生变化并执行正式保存/发布；
-- Scene composition 发生变化并正式保存/发布。
+- Dataset 数据快照内容改变；
+- 实时 Dataset 的 schema / 单位 / 来源语义改变；
+- Layer source bindings / selector / query 发生语义变化；
+- Style semantic rules 发生变化；
+- Map 的正式 layer composition 改变并保存/发布；
+- Scene 的正式 composition 改变并保存/发布。
 
-### 14.2 不应产生新版本
+### 17.2 通常不产生新 AssetVersion
 
-下列运行变化通常不改变资产语义：
-
-- Martin 实例从 A 换成 B；
+- Martin 实例 A 换成 B；
 - TiTiler pod 重启；
 - signed URL 刷新；
 - cache key 改变；
-- endpoint host 迁移但 Distribution 语义不变。
+- endpoint host 迁移但 Distribution 语义不变；
+- renderer variant 重新编译但语义输出等价且仍属于同一未发布版本。
 
-这些属于 Provider/ServiceInstance/Operational state。
+Published 版本的依赖实体同样视为不可原地改写；若编译产物构成 content hash，应通过发布服务管理。
 
-## 15. “计算即地图”的正式链路
+---
 
-以 AERMOD 输出为例，但流程对其他模型通用：
+## 18. “计算即地图”的正式链路
+
+以 AERMOD 输出为例，但链路对其他模型通用：
 
 ```text
 Job / Run
@@ -627,7 +790,7 @@ Distribution: COG
 SpatialDistributionProfile
   ↓
 create Layer AssetVersion
-  ↓
+  ↓ LayerSourceBinding
 create/apply Style AssetVersion
   ↓
 MapLayerBinding
@@ -647,7 +810,9 @@ Map AssetVersion
 下载 TIFF → 重新上传 GIS → 配服务 → 手工配色 → 再打开地图
 ```
 
-## 16. GeoAgent 工具边界
+---
+
+## 19. GeoAgent 工具边界
 
 未来 GeoAgent 只能调用正式 Fabric API，例如：
 
@@ -655,6 +820,7 @@ Map AssetVersion
 find_dataset
 resolve_asset_alias
 create_layer
+bind_layer_source
 apply_style
 set_layer_filter
 add_layer_to_map
@@ -663,9 +829,9 @@ set_map_camera
 save_map_version
 ```
 
-Agent 不得绕过 AssetVersion/Permission/Provenance，直接把临时 URL 塞入持久 Map JSON。
+Agent 不得绕过 AssetVersion / Permission / Provenance，直接把临时 URL 塞入持久 Map JSON。
 
-示例：
+例如：
 
 ```text
 “只显示 NO₂ > 80 μg/m³ 的区域”
@@ -679,48 +845,152 @@ MapLayerBinding.filter_spec
 
 而不是重新运行 AERMOD。
 
-## 17. 第一批数据库约束
+---
+
+## 20. 反向压力测试
+
+设计在写 migration 前必须至少通过以下五类场景。
+
+### 20.1 道路矢量
+
+```text
+DatasetVersion(kind=VECTOR)
+  ├── Distribution(PostGIS)
+  ├── Distribution(GeoParquet)
+  └── Distribution(MVT/PMTiles)
+        ↓
+多个 LayerVersion
+        ↓
+多个 StyleVersion
+        ↓
+Map
+```
+
+结论：一个 Dataset 多消费形态、多 Layer、多 Style，无模型冲突。
+
+### 20.2 AERMOD 浓度 COG
+
+```text
+Artifact(original TIFF)
+  ↓ derived
+DatasetVersion(kind=RASTER)
+  ↓
+Distribution(COG)
+  ↓
+LayerVersion(kind=RASTER)
+  ↓
+continuous concentration Style
+  ↓
+Map
+```
+
+结论：Artifact、DatasetVersion、Distribution、Layer 不混淆；可完整追踪计算来源。
+
+### 20.3 WRF NetCDF / Zarr 风场
+
+```text
+DatasetVersion(kind=MULTIDIMENSIONAL)
+  ↓
+Distribution(NetCDF/Zarr)
+  ↓
+LayerSourceBinding.selector_spec = [U10, V10, time]
+  ↓
+LayerVersion(kind=VECTOR_FIELD)
+```
+
+结论：变量/时间选择属于 Layer source binding，而不是复制 Dataset 或 Distribution。
+
+### 20.4 道路 + 实时交通多源专题图
+
+```text
+roads DatasetVersion
+       ┐
+       ├─ LayerSourceBinding(PRIMARY/JOIN) → congestion LayerVersion
+       │
+traffic-live DatasetVersion
+       ┘
+```
+
+结论：LayerSourceBinding 必须是 one Layer → many DatasetVersions；单 FK 模型不成立。
+
+### 20.5 3D Tiles + Terrain
+
+```text
+building DatasetVersion → 3D Tiles Distribution → building Layer
+terrain DatasetVersion  → terrain Distribution  → terrain Layer
+                                          ↓
+                                  SceneLayerBinding
+                          role=CONTENT / TERRAIN
+                                          ↓
+                                         Scene
+```
+
+结论：Scene 不持久化 provider URL；Terrain 与 3D 内容都保持正式 Layer 语义。
+
+### 20.6 外部共享底图
+
+```text
+platform-level Dataset Asset
+  ↓ external/live Distribution
+  ↓ Basemap LayerVersion
+  ↓ MapLayerBinding(role=BASEMAP)
+```
+
+结论：底图不是 Map JSON 里的特殊字符串；仍受统一权限、版本和来源管理。
+
+---
+
+## 21. 第一批数据库约束
 
 至少需要：
 
 1. 每个 Typed Profile 对 `asset_version_id` UNIQUE；
-2. Map/Scene binding 的 `binding_key` 在所属版本内唯一；
-3. Map/Scene binding 的 `order_index` 在所属版本内唯一；
-4. opacity 范围 `[0,1]`；
-5. min_zoom <= max_zoom；
-6. Dataset spatial extent 使用有效 Polygon/MultiPolygon；
-7. Layer source 与 Layer 本身 tenant 一致，或 source 为允许引用的平台级共享资产；
-8. LayerStyleBinding 的两端版本类型正确；
-9. MapLayerBinding / SceneLayerBinding 的两端版本类型正确；
-10. Published Map/Layer/Style/Scene version 不可原地修改。
+2. LayerSourceBinding 的 `binding_key` 在 LayerVersion 内唯一；
+3. LayerStyleBinding 的 `binding_key` 在 LayerVersion 内唯一；
+4. StyleRendererVariant 的 `(style_version, renderer_family, variant_key)` 唯一；
+5. Map/Scene binding 的 `binding_key` 在所属版本内唯一；
+6. Map/Scene binding 的 `order_index` 在所属版本内唯一；
+7. opacity 范围 `[0,1]`；
+8. min_zoom <= max_zoom；
+9. Layer source 与 Layer tenant 一致，或 source 为允许引用的平台级共享资产；
+10. LayerStyleBinding 的两端版本类型正确；
+11. MapLayerBinding / SceneLayerBinding 的两端版本类型正确；
+12. Style override 必须指向 style AssetVersion；
+13. Published Dataset/Layer/Style/Map/Scene version 及其组成关系不可原地修改。
 
 跨 `Asset.asset_type` 的类型约束无法用普通 FK 表达时，第一阶段采用：
 
 ```text
-Domain Service + model clean() + tests
+Domain Service
++ model clean()/validation
++ tests
 ```
 
-不要为了数据库“一次性完美”而引入难维护的 polymorphic generic FK。
+不要为了数据库“一次性完美”引入 GenericForeignKey 或难维护的 polymorphic FK。
 
-## 18. 第一批索引
+---
 
-建议：
+## 22. 第一批索引
 
 ```text
-DatasetVersionProfile.spatial_extent           GiST
-MapVersionProfile.extent                       GiST
-SceneVersionProfile.extent                     GiST
-SpatialDistributionProfile.bounds              GiST
+DatasetVersionProfile.spatial_extent                 GiST
+MapVersionProfile.extent                             GiST
+SceneVersionProfile.extent                           GiST
+SpatialDistributionProfile.bounds                    GiST
 DatasetVersionProfile(start_time, end_time)
-LayerVersionProfile(source_dataset_version)
-MapLayerBinding(map_version, order_index)
-SceneLayerBinding(scene_version, order_index)
-LayerStyleBinding(layer_version, role)
+LayerSourceBinding(layer_version_id, role)
+LayerSourceBinding(source_dataset_version_id)
+LayerStyleBinding(layer_version_id, role)
+StyleRendererVariant(style_version_id, renderer_family)
+MapLayerBinding(map_version_id, order_index)
+SceneLayerBinding(scene_version_id, order_index)
 ```
 
-后续真实查询基准出现前，不预建大量 JSONB GIN 索引。
+在出现真实查询基准前，不预建大量 JSONB GIN 索引。
 
-## 19. Django app 边界
+---
+
+## 23. Django app 边界
 
 建议新增独立 app：
 
@@ -734,7 +1004,9 @@ spatial_fabric.spatial
 DatasetVersionProfile
 SpatialDistributionProfile
 LayerVersionProfile
+LayerSourceBinding
 StyleVersionProfile
+StyleRendererVariant
 LayerStyleBinding
 MapVersionProfile
 MapLayerBinding
@@ -744,7 +1016,7 @@ SceneLayerBinding
 
 `assets` app 继续保持纯 Asset Kernel，不把地图字段反向塞进去。
 
-未来 provider adapters 分开：
+Provider adapters 后续分开：
 
 ```text
 providers/martin
@@ -753,27 +1025,27 @@ providers/geoserver
 providers/object_storage
 ```
 
-前端 MapLibre/deck.gl/Cesium 也不进入 Django Domain Model。
+MapLibre / deck.gl / Cesium 属于前端 renderer，不进入 Django Domain Model。
 
-## 20. 建议 migration 顺序
+---
 
-地图内核第一批 migration 应避免把所有对象一次塞入巨型 0001。
+## 24. 建议 migration 顺序
 
-建议：
+地图内核第一批 migration 不一次塞进巨型 0001：
 
 ```text
 spatial/0001_dataset_distribution_profiles
         ↓
 spatial/0002_layer_style_profiles
         ↓
-spatial/0003_layer_style_bindings
+spatial/0003_source_style_renderer_bindings
         ↓
 spatial/0004_map_profiles_bindings
         ↓
 spatial/0005_scene_profiles_bindings
 ```
 
-每一步都必须：
+每一步必须真实验证：
 
 ```text
 makemigrations --check
@@ -781,11 +1053,13 @@ migrate on empty PostGIS
 pytest with real migrations
 ```
 
-如果 Django 自动生成的依赖图与上述编号不同，以**无环、可从空库重建**为最高原则，不为了编号美观手改出循环。
+如果 Django 自动生成依赖图与上述编号不同，以**无环、可从空库重建**为最高原则，不为了编号美观手改出循环。
 
-## 21. V0.1 垂直验证切片
+---
 
-地图内核不是以“把九张表建完”为完成标准，而是以下链路真的跑通：
+## 25. V0.1 垂直验证切片
+
+地图内核不是以“把表建完”为完成标准，而是以下链路真的跑通：
 
 ```text
 register Dataset
@@ -794,11 +1068,11 @@ inspect spatial metadata
 ↓
 register Distribution
 ↓
-create Layer
+create Layer + LayerSourceBinding
 ↓
 apply Style
 ↓
-save Map
+save Map + MapLayerBinding
 ↓
 fetch Map definition API
 ↓
@@ -827,23 +1101,27 @@ trace provenance
 
 第二条链路跑通时，才算真正实现 Spatial Fabric 的“计算即地图”。
 
-## 22. 当前不做
+---
+
+## 26. 当前不做
 
 此规格阶段不引入：
 
-- GeoServer/Martin/TiTiler 的具体 provider model；
+- GeoServer / Martin / TiTiler 的具体 provider model；
 - Cesium 实际前端；
 - OGC API 全量实现；
 - STAC Catalog 服务；
 - Tile cache 调度；
-- Job/Run 的正式表；
+- Job / Run 的正式表；
 - GeoAgent；
 - 行业专属 Layer 类型；
 - 复杂数据库 trigger。
 
-这些都必须在核心空间对象边界稳定后按独立 Phase/ADR 接入。
+这些都必须在核心空间对象边界稳定后按独立 Phase / ADR 接入。
 
-## 23. 与 Phase A 的关系
+---
+
+## 27. 与 Phase A 的关系
 
 本文不修改 Phase A 的 Asset Kernel，而是在其上扩展 Typed Facet：
 
@@ -854,9 +1132,12 @@ Asset / AssetVersion / Artifact / Distribution
           ↓ additive extension
 
 Spatial Map Kernel
-Dataset / Layer / Style / Map / Scene typed profiles + bindings
+Dataset / Layer / Style / Map / Scene typed profiles
++ LayerSourceBinding
++ Style renderer variants
++ Map/Scene composition bindings
 ```
 
-因此 PR #1 可以独立完成 Review/合并；地图内核应作为后续独立 PR 实现，避免 Phase A 基线无限扩张。
+因此 PR #1 可以独立完成 Review/合并；地图内核作为后续独立 PR 实现，避免 Phase A 基线无限扩张。
 
-同时，既定开发顺序仍以项目状态文件为准：Phase B IAM & Governance 若优先级更高，地图内核规格可以保持冻结而不抢占 Phase B 实现顺序。
+既定开发顺序仍以项目状态文件为准：如果 Phase B IAM & Governance 优先，则地图内核规格保持冻结而不抢占 Phase B 实现顺序。
