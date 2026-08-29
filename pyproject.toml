@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "yujian-spatial-fabric"
+version = "0.1.0a0"
+description = "Enterprise spatial intelligence control plane and execution foundation"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+license = { text = "Proprietary" }
+authors = [{ name = "Yujian Technology" }]
+dependencies = [
+  "Django>=5.2.8,<5.3",
+  "djangorestframework>=3.17.2,<3.18",
+  "drf-spectacular>=0.30,<0.31",
+  "psycopg[binary]>=3.3,<3.4",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[dependency-groups]
+dev = [
+  "django-stubs>=5.2,<6",
+  "mypy>=1.17,<2",
+  "pip-audit>=2.9,<3",
+  "pre-commit>=4,<5",
+  "pytest>=8,<10",
+  "pytest-cov>=6,<8",
+  "pytest-django>=4.14,<5",
+  "ruff>=0.16.5,<0.17",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/spatial_fabric"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["**/migrations/*.py"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "S", "DJ", "ASYNC", "RUF"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/config/settings/*.py" = ["F403", "F405"]
+"backend/**/tests/*.py" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+pythonpath = ["backend"]
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["backend"]
+
+[tool.coverage.run]
+branch = true
+source = ["backend/spatial_fabric"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 70
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["mypy_django_plugin.main"]
+strict = true
+warn_unused_configs = true
+exclude = ["/migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["rest_framework.*", "drf_spectacular.*"]
+ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
