@@ -10,6 +10,7 @@
 - 当前阶段：**Phase A — Tenancy + Principal + Asset Kernel**
 - 当前开发分支：`feat/phase-a-foundation`
 - 当前 PR：**#1（Draft，Phase A Foundation）**
+- PR 技术状态：**已满足 Ready for Review 的工程验证条件；当前仅因 GitHub 连接器的 Draft→Ready GraphQL mutation 兼容错误而尚未切换 UI 状态**
 - 架构：**Django Modular Monolith Control Plane + Independent Workers/Providers**
 - Domain ID：UUIDv7
 - API prefix：`/api/v1/`
@@ -60,9 +61,11 @@ Published Version 不可原地修改；执行前 Alias 必须解析成具体 Ver
 - Phase A 跨租户与资产引用不变量测试；
 - PostgreSQL/PostGIS baseline migration；
 - Django 5.2.17 实际生成并固化的 Phase A migrations；
-- 严格 GitHub Actions：model/migration sync、空库 migrate、真实 migration pytest、Provider leak、Ruff、pip-audit、Docker build；
 - provider-neutral `DATABASE_URL` / `POSTGRES_*` 数据库配置适配；
-- Render Free Preview Blueprint 与中文部署说明。
+- Render Free Preview Blueprint 与中文部署说明；
+- 生产 Docker image；
+- 严格 GitHub Actions：model/migration sync、空库 migrate、真实 migration pytest、Provider leak、Ruff、pip-audit、Docker build；
+- **生产镜像真实 Preview smoke test：`start-preview.sh → migrate → Uvicorn → readiness/OpenAPI/Swagger`。**
 
 ## 5. 当前 migrations 的真实状态
 
@@ -94,35 +97,63 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 
 反向迁移故意为 no-op，不自动 `DROP EXTENSION postgis`，避免未来已有空间对象时造成破坏性回滚。
 
-已经由 GitHub Runner 的 PostgreSQL/PostGIS 空库真实验证：
+## 6. 当前真实 CI / Runtime 验证
 
-- `manage.py check`：通过；
-- `makemigrations --check --dry-run`：通过；
-- `migrate --noinput`：通过；
-- Phase A 核心不变量测试：通过；
-- `DATABASE_URL` 适配单测：已加入并在最新回归中执行；
-- Provider leakage check：通过。
+最后一轮完整代码验证对应提交：`dd6fb1ab`。
 
-**最新提交的 Ruff / pip-audit / Docker build 完整回归状态仍以 `docs/project/CURRENT_STATUS.md` 和 GitHub Actions 为准。严禁把尚未实际跑完的检查写成“通过”。**
+GitHub Runner 的 PostgreSQL/PostGIS 环境已经真实通过：
 
-## 6. 当前明确尚未完成
+- `manage.py check`；
+- `makemigrations --check --dry-run`；
+- 空库 `migrate --noinput`；
+- Phase A pytest（真实 migrations）；
+- coverage threshold；
+- `DATABASE_URL` 适配单测；
+- Provider leakage check；
+- Ruff；
+- pip-audit；
+- production Docker image build；
+- production image + `scripts/start-preview.sh` 启动；
+- `/health/ready`；
+- `/api/schema/`；
+- `/api/docs/`。
 
+即当前 CI 已验证：
+
+```text
+empty PostGIS database
+        ↓
+formal migrations
+        ↓
+pytest / Ruff / audit
+        ↓
+production Docker build
+        ↓
+start-preview.sh
+        ↓
+migrate -> Uvicorn
+        ↓
+readiness + OpenAPI + Swagger
+```
+
+## 7. 当前明确尚未完成
+
+- Render 账号侧真实 Apply Blueprint 和外部 `*.onrender.com` URL 验证；
 - Phase B Role / Policy / Entitlement / Quota；
 - Job / Run / Result；
 - ServiceDeployment / ServiceInstance；
 - Temporal、Object Storage、Martin、TiTiler、GeoServer 等 Provider；
 - Dataset / Layer / Style / Map / Scene 的正式模型实现；
 - Portal / GeoStudio / Fabric Console 前端；
-- 三份大型 FINAL 架构/技术/领域规范全文同步；
-- Render 账号侧真实 Apply Blueprint 和外部 `*.onrender.com` URL 验证。
+- 三份大型 FINAL 架构/技术/领域规范全文同步。
 
-## 7. 免费 Preview 部署
+## 8. 免费 Preview 部署
 
 当前仓库已经具备后端免费演示部署适配：
 
 ```text
 GitHub
-  ↓
+  ↓ checksPass
 Render Free Web Service (Docker)
   ↓ DATABASE_URL
 Render Free PostgreSQL + PostGIS
@@ -137,7 +168,7 @@ backend/config/database.py
 docs/deployment/preview.md
 ```
 
-演示成功后主要检查：
+外部部署后主要检查：
 
 ```text
 /health/live
@@ -150,14 +181,38 @@ docs/deployment/preview.md
 
 当前工具没有已连接的 Render 账号写入能力，所以外部 URL 只有在 Render 账号中 Apply Blueprint 后才会真实产生；不得虚构链接。
 
-## 8. Account 与 Principal
+## 9. Known Risk
+
+### 9.1 `uv.lock` 尚未固化
+
+当前开发、CI 与 Preview 依赖 `pyproject.toml` 中的有界版本范围，但仓库尚未提交 `uv.lock`。
+
+因此当前 Dockerfile 使用：
+
+```text
+uv sync --no-dev --no-editable
+```
+
+而不是伪造冻结状态。进入正式发布/生产冻结前必须：
+
+1. 生成并提交 `uv.lock`；
+2. CI 使用 lockfile；
+3. Docker 切换到 `uv sync --frozen --no-dev --no-editable`。
+
+这不是当前免费 Preview 的阻塞项，但属于正式生产前必须关闭的可重复构建风险。
+
+### 9.2 PR Draft 状态
+
+PR #1 的工程条件已经达到 Ready for Review。当前连接器调用 `markPullRequestReadyForReview` 时因 GitHub GraphQL schema 字段兼容问题失败，所以 GitHub UI 仍显示 Draft。可在 GitHub UI 手工执行 **Ready for review**，或待连接器修复后重试。
+
+## 10. Account 与 Principal
 
 - `Account`：登录认证账户；
 - `Principal`：授权主体。
 
 一个 Principal 可以代表 Human、ServiceAccount、Agent、ExternalApplication。Agent 不应伪装成 Django User。未来 Keycloak/OIDC/SAML 通过 IdentityLink 关联，不使用外部 IdP ID 替代 Fabric UUID。
 
-## 9. 前端边界
+## 11. 前端边界
 
 三个逻辑产品面：
 
@@ -171,7 +226,18 @@ Fabric Console  = 租户/权限/安全/服务/计算/用量/运维管理控制�
 
 前端建立后优先使用 Cloudflare Pages 的 branch/PR Preview URL，让每次界面修改都可以直接通过浏览器审查。
 
-## 10. 中文注释规范
+## 12. 下一任务
+
+优先级顺序：
+
+1. GitHub UI 手工把 PR #1 切到 **Ready for review**（如果需要）；
+2. 在 Render 账号中 Apply `render.yaml`；
+3. 获得真实 URL 后验证 `/health/ready` 和 `/api/docs/`；
+4. 外部 Preview 验证完成后决定 Phase A 合并；
+5. Phase A 合并后进入 Phase B IAM & Governance；
+6. 地图子系统继续按已冻结的 `Dataset / Layer / Style / Map / Scene / Representation` 设计推进，不因 Render Preview 改变核心架构。
+
+## 13. 中文注释规范
 
 核心领域代码必须优先使用详细中文注释/docstring 解释：
 
@@ -185,7 +251,7 @@ Fabric Console  = 租户/权限/安全/服务/计算/用量/运维管理控制�
 
 Ruff 的 `RUF001/RUF002/RUF003` 已明确关闭，因为这些规则会把中文全角标点当作“易混淆字符”；其余语法、导入、安全、Django 等质量规则继续启用，禁止以“中文注释”为理由扩大豁免范围。
 
-## 11. 每次开发结束必须更新
+## 14. 每次开发结束必须更新
 
 1. `docs/project/CURRENT_STATUS.md`；
 2. 本文件中的阶段/下一任务（如有变化）；
