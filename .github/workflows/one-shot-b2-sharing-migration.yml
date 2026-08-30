@@ -57,29 +57,28 @@ jobs:
         run: uv sync --group dev
 
       # 这是实现前自审发现的安全/运维边界：正式 create API 不应生成一条创建瞬间就已失效的授权。
-      # 使用 exact replacement + 断言，避免一次性 workflow 对其他业务代码做模糊修改。
+      # 通过唯一锚点和下一行双重断言定位，不对源文件做模糊正则替换。
       - name: 补齐新 ShareGrant 的未来失效时间约束
         run: |
           python - <<'PY'
           from pathlib import Path
 
           path = Path("backend/spatial_fabric/sharing/services.py")
-          text = path.read_text(encoding="utf-8")
-          old = '''        if (principal_id is None) == (group_id is None):
-              raise ShareGrantError("ShareGrant 必须且只能指定 Principal 或 Group 之一。")
-
-          actor = Principal.objects.get(pk=granted_by_id)
-          '''
-          new = '''        if (principal_id is None) == (group_id is None):
-              raise ShareGrantError("ShareGrant 必须且只能指定 Principal 或 Group 之一。")
-          if valid_until is not None and valid_until <= timezone.now():
-              raise ShareGrantError("新 ShareGrant 的 valid_until 必须晚于当前时间。")
-
-          actor = Principal.objects.get(pk=granted_by_id)
-          '''
-          if text.count(old) != 1:
-              raise SystemExit("Expected exactly one ShareGrant create-grant insertion point.")
-          path.write_text(text.replace(old, new), encoding="utf-8")
+          lines = path.read_text(encoding="utf-8").splitlines()
+          anchor = "        if (principal_id is None) == (group_id is None):"
+          expected_next = '            raise ShareGrantError("ShareGrant 必须且只能指定 Principal 或 Group 之一。")'
+          indexes = [index for index, line in enumerate(lines) if line == anchor]
+          if len(indexes) != 1:
+              raise SystemExit(f"Expected exactly one create-grant anchor, found {len(indexes)}.")
+          index = indexes[0]
+          if index + 1 >= len(lines) or lines[index + 1] != expected_next:
+              raise SystemExit("ShareGrant create-grant anchor shape changed; refusing automatic patch.")
+          insertion = [
+              "        if valid_until is not None and valid_until <= timezone.now():",
+              '            raise ShareGrantError("新 ShareGrant 的 valid_until 必须晚于当前时间。")',
+          ]
+          lines[index + 2:index + 2] = insertion
+          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
       - name: Django 系统检查
