@@ -81,6 +81,29 @@ jobs:
           path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
+      # django-stubs 将 JSONField 暴露为 Any。不能用 ignore 掩盖这个边界；
+      # 先显式收窄为 dict，再判断空字典，同时对异常值 fail closed。
+      - name: 收窄 ShareGrant conditions 的严格类型
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("backend/spatial_fabric/sharing/models.py")
+          text = path.read_text(encoding="utf-8")
+          old = "        return self.conditions == {}\n"
+          new = (
+              "        conditions = self.conditions\n"
+              "        if not isinstance(conditions, dict):\n"
+              "            return False\n"
+              "        return len(conditions) == 0\n"
+          )
+          if text.count(old) != 1:
+              raise SystemExit(
+                  f"Expected exactly one ShareGrant conditions return, found {text.count(old)}."
+              )
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
       # Ruff 的 fix 只允许作用于本阶段两份新源文件；随后仍执行全仓 ruff check，
       # 因此这是确定性的格式修复，不是降低质量门禁。
       - name: 规范化 B2.2 源文件格式
