@@ -101,11 +101,12 @@ def test_share_grant_cross_tenant_subject_and_actor_fail_clean() -> None:
 
 
 @pytest.mark.django_db
-def test_only_one_active_direct_grant_per_resource_and_subject() -> None:
-    tenant = create_tenant("share-unique")
+def test_multiple_grants_preserve_independent_evidence_and_revoke_scope() -> None:
+    tenant = create_tenant("share-evidence")
     actor = create_principal(tenant, "管理员")
     user = create_principal(tenant, "用户")
     resource_id = uuid4()
+    resource_ref = ResourceRef(tenant.id, "map", resource_id)
     service = ShareGrantService()
 
     first = service.create_grant(
@@ -116,18 +117,6 @@ def test_only_one_active_direct_grant_per_resource_and_subject() -> None:
         granted_by_id=actor.id,
         principal_id=user.id,
     )
-
-    with pytest.raises(ValidationError):
-        service.create_grant(
-            tenant_id=tenant.id,
-            resource_kind="map",
-            resource_id=resource_id,
-            privilege_keys=["view_metadata"],
-            granted_by_id=actor.id,
-            principal_id=user.id,
-        )
-
-    service.revoke_grant(grant_id=first.id, actor_id=actor.id)
     second = service.create_grant(
         tenant_id=tenant.id,
         resource_kind="map",
@@ -136,7 +125,21 @@ def test_only_one_active_direct_grant_per_resource_and_subject() -> None:
         granted_by_id=actor.id,
         principal_id=user.id,
     )
-    assert second.id != first.id
+
+    resolution = ShareGrantResolver().resolve(
+        principal_id=user.id,
+        resource_ref=resource_ref,
+    )
+    assert resolution.effective_privilege_keys == frozenset({"tile_read", "view_metadata"})
+    assert {grant.grant_id for grant in resolution.grants} == {first.id, second.id}
+
+    service.revoke_grant(grant_id=first.id, actor_id=actor.id)
+    after_revoke = ShareGrantResolver().resolve(
+        principal_id=user.id,
+        resource_ref=resource_ref,
+    )
+    assert after_revoke.effective_privilege_keys == frozenset({"view_metadata"})
+    assert {grant.grant_id for grant in after_revoke.grants} == {second.id}
 
 
 @pytest.mark.django_db
@@ -155,6 +158,27 @@ def test_share_grant_service_rejects_unknown_privilege_atomically() -> None:
             granted_by_id=actor.id,
             principal_id=user.id,
         )
+    assert ShareGrant.objects.count() == before
+
+
+@pytest.mark.django_db
+def test_share_grant_service_rejects_already_expired_new_grant() -> None:
+    tenant = create_tenant("share-expired-create")
+    actor = create_principal(tenant, "管理员")
+    user = create_principal(tenant, "用户")
+    before = ShareGrant.objects.count()
+
+    with pytest.raises(ShareGrantError):
+        ShareGrantService().create_grant(
+            tenant_id=tenant.id,
+            resource_kind="asset",
+            resource_id=uuid4(),
+            privilege_keys=["read"],
+            granted_by_id=actor.id,
+            principal_id=user.id,
+            valid_until=timezone.now() - timedelta(seconds=1),
+        )
+
     assert ShareGrant.objects.count() == before
 
 
@@ -388,12 +412,13 @@ def test_access_request_fulfillment_creates_formal_share_grant() -> None:
 
 
 @pytest.mark.django_db
-def test_access_request_does_not_silently_expand_existing_grant() -> None:
-    tenant = create_tenant("access-expand")
+def test_access_request_fulfillment_creates_independent_grant_evidence() -> None:
+    tenant = create_tenant("access-independent")
     actor = create_principal(tenant, "资源管理员")
     user = create_principal(tenant, "申请人")
     resource_id = uuid4()
-    ShareGrantService().create_grant(
+    grant_service = ShareGrantService()
+    existing = grant_service.create_grant(
         tenant_id=tenant.id,
         resource_kind="dataset",
         resource_id=resource_id,
@@ -401,21 +426,37 @@ def test_access_request_does_not_silently_expand_existing_grant() -> None:
         granted_by_id=actor.id,
         principal_id=user.id,
     )
-    request = AccessRequestService().submit_request(
+    access_service = AccessRequestService()
+    request = access_service.submit_request(
         tenant_id=tenant.id,
         requester_id=user.id,
         resource_kind="dataset",
         resource_id=resource_id,
-        privilege_keys=["read", "export"],
+        privilege_keys=["export"],
     )
 
-    with pytest.raises(AccessRequestError):
-        AccessRequestService().fulfill_request(
-            access_request_id=request.id,
-            actor_id=actor.id,
-        )
-    request.refresh_from_db()
-    assert request.status == AccessRequestStatus.PENDING
+    fulfilled = access_service.fulfill_request(
+        access_request_id=request.id,
+        actor_id=actor.id,
+    )
+    fulfillment_grant = fulfilled.fulfilled_by_grant
+    assert fulfillment_grant is not None
+    assert fulfillment_grant.id != existing.id
+
+    resource_ref = ResourceRef(tenant.id, "dataset", resource_id)
+    before_revoke = ShareGrantResolver().resolve(
+        principal_id=user.id,
+        resource_ref=resource_ref,
+    )
+    assert before_revoke.effective_privilege_keys == frozenset({"read", "export"})
+
+    grant_service.revoke_grant(grant_id=fulfillment_grant.id, actor_id=actor.id)
+    after_revoke = ShareGrantResolver().resolve(
+        principal_id=user.id,
+        resource_ref=resource_ref,
+    )
+    assert after_revoke.effective_privilege_keys == frozenset({"read"})
+    assert {grant.grant_id for grant in after_revoke.grants} == {existing.id}
 
 
 @pytest.mark.django_db
