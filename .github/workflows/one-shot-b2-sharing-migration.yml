@@ -1,0 +1,120 @@
+name: One-shot B2 sharing migration
+
+on:
+  push:
+    branches:
+      - feat/phase-b2-governance-controls
+
+permissions:
+  contents: write
+
+jobs:
+  generate-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: spatial_fabric_test
+          POSTGRES_USER: spatial_fabric
+          POSTGRES_PASSWORD: spatial_fabric_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spatial_fabric -d spatial_fabric_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      SF_ENV: test
+      SF_SECRET_KEY: ci-only-not-production
+      POSTGRES_DB: spatial_fabric_test
+      POSTGRES_USER: spatial_fabric
+      POSTGRES_PASSWORD: spatial_fabric_test
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/phase-b2-governance-controls
+          fetch-depth: 0
+
+      - name: 安装 GeoDjango 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev libgeos-dev
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 安装 Python 依赖
+        run: uv sync --group dev
+
+      # 这是实现前自审发现的安全/运维边界：正式 create API 不应生成一条创建瞬间就已失效的授权。
+      # 使用 exact replacement + 断言，避免一次性 workflow 对其他业务代码做模糊修改。
+      - name: 补齐新 ShareGrant 的未来失效时间约束
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("backend/spatial_fabric/sharing/services.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''        if (principal_id is None) == (group_id is None):
+              raise ShareGrantError("ShareGrant 必须且只能指定 Principal 或 Group 之一。")
+
+          actor = Principal.objects.get(pk=granted_by_id)
+          '''
+          new = '''        if (principal_id is None) == (group_id is None):
+              raise ShareGrantError("ShareGrant 必须且只能指定 Principal 或 Group 之一。")
+          if valid_until is not None and valid_until <= timezone.now():
+              raise ShareGrantError("新 ShareGrant 的 valid_until 必须晚于当前时间。")
+
+          actor = Principal.objects.get(pk=granted_by_id)
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("Expected exactly one ShareGrant create-grant insertion point.")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
+      - name: Django 系统检查
+        run: uv run python backend/manage.py check
+
+      - name: 由 Django 生成 sharing migration
+        run: uv run python backend/manage.py makemigrations sharing
+
+      - name: 从空 PostGIS 执行完整 migrations
+        run: uv run python backend/manage.py migrate --noinput
+
+      - name: 运行全部领域测试
+        run: uv run pytest --cov=backend/spatial_fabric --cov-report=term-missing
+
+      - name: Provider 泄漏检查
+        run: uv run python scripts/check_provider_leaks.py
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: strict mypy
+        run: uv run mypy backend
+
+      - name: 确认生成 migration 后模型同步
+        run: uv run python backend/manage.py makemigrations --check --dry-run
+
+      - name: 提交已验证的 B2.2 source repair 与 Django migration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/spatial_fabric/sharing/services.py backend/spatial_fabric/sharing/migrations/
+          if git diff --cached --quiet; then
+            echo "No B2.2 source/migration changes generated."
+            exit 1
+          fi
+          git commit -m "db: add verified B2.2 resource sharing schema"
+          git push origin HEAD:feat/phase-b2-governance-controls
