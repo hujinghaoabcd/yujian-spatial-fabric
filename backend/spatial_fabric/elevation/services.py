@@ -11,12 +11,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
 from django.db import transaction
-from django.db.models import Q, QuerySet
+from django.db.models import Q
 from django.utils import timezone
 
 from spatial_fabric.elevation.models import (
@@ -103,7 +103,7 @@ class ApprovalAuthorityChecker(Protocol):
     """决定某 Principal 是否可对 ApprovalRequest 作最终决定。"""
 
     def can_decide(
-        self, *, approver_id: UUID, approval_request: ApprovalRequest, at: object
+        self, *, approver_id: UUID, approval_request: ApprovalRequest, at: datetime
     ) -> AuthorityCheck: ...
 
 
@@ -117,7 +117,7 @@ class BreakGlassAuthorityChecker(Protocol):
         beneficiary_id: UUID,
         scope_ref: ElevatedScopeRef,
         privilege_keys: tuple[str, ...],
-        at: object,
+        at: datetime,
     ) -> AuthorityCheck: ...
 
 
@@ -130,7 +130,7 @@ class DelegationAuthorityChecker(Protocol):
         delegator_id: UUID,
         scope_ref: ElevatedScopeRef,
         requested_privilege_keys: tuple[str, ...],
-        at: object,
+        at: datetime,
     ) -> PrivilegeAuthorityCheck: ...
 
 
@@ -324,7 +324,7 @@ class PermissionBoundaryResolver:
         principal_id: UUID,
         scope_ref: ElevatedScopeRef,
         candidate_privilege_keys: tuple[str, ...],
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> BoundaryResolution:
         moment = at or timezone.now()
         context = _ScopeLoader.load(scope_ref)
@@ -431,9 +431,9 @@ class ApprovalService:
         target_ref: ApprovalTargetRef,
         privilege_keys: tuple[str, ...],
         reason: str,
-        expires_at: object,
-        requested_valid_until: object | None = None,
-        at: object | None = None,
+        expires_at: datetime,
+        requested_valid_until: datetime | None = None,
+        at: datetime | None = None,
     ) -> ApprovalRequest:
         moment = at or timezone.now()
         requester = _ElevationQuery.active_principal(
@@ -484,7 +484,7 @@ class ApprovalService:
         approver_id: UUID,
         decision: ApprovalDecisionValue,
         comment: str = "",
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> ApprovalDecision:
         moment = at or timezone.now()
         with transaction.atomic():
@@ -526,6 +526,7 @@ class ApprovalService:
                 decision=decision,
                 approver=approver,
                 comment=comment,
+                authority_snapshot=authority.evidence,
                 decided_at=moment,
             )
             evidence.full_clean()
@@ -540,7 +541,7 @@ class ApprovalService:
             return evidence
 
     def cancel(
-        self, *, approval_request_id: UUID, requester_id: UUID, at: object | None = None
+        self, *, approval_request_id: UUID, requester_id: UUID, at: datetime | None = None
     ) -> ApprovalRequest:
         moment = at or timezone.now()
         with transaction.atomic():
@@ -580,7 +581,7 @@ class ApprovalResolver:
         target_ref: ApprovalTargetRef,
         privilege_key: str,
         purpose: ApprovalPurpose,
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> ApprovalResolution:
         moment = at or timezone.now()
         _ElevationQuery.active_principal(
@@ -629,7 +630,7 @@ class TemporaryAccessService:
         *,
         approval_request_id: UUID,
         activated_by_id: UUID,
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> TemporaryAccessGrant:
         moment = at or timezone.now()
         with transaction.atomic():
@@ -716,13 +717,17 @@ class TemporaryAccessService:
         privilege_keys: tuple[str, ...],
         emergency_reason: str,
         ttl: timedelta,
-        at: object | None = None,
+        idempotency_key: str,
+        at: datetime | None = None,
     ) -> TemporaryAccessGrant:
         moment = at or timezone.now()
         if ttl <= timedelta(0) or ttl > BREAK_GLASS_MAX_TTL:
             raise TemporaryAccessControlError("Break-glass TTL 必须大于 0 且不超过 60 分钟。")
-        if not emergency_reason.strip():
+        reason = emergency_reason.strip()
+        if not reason:
             raise TemporaryAccessControlError("Break-glass 必须记录紧急访问强理由。")
+        if not idempotency_key.strip():
+            raise TemporaryAccessControlError("Break-glass 必须提供 idempotency_key。")
         context = _ScopeLoader.load(scope_ref)
         beneficiary = _ElevationQuery.active_principal(
             principal_id=beneficiary_id,
@@ -734,42 +739,85 @@ class TemporaryAccessService:
         )
         privileges = _ElevationQuery.active_privileges(privilege_keys)
         keys = tuple(privilege.key for privilege in privileges)
-        if self.break_glass_checker is None:
-            raise TemporaryAccessControlError("未配置 BreakGlassAuthorityChecker，必须 fail closed。")
-        try:
-            authority = self.break_glass_checker.can_activate(
-                actor_id=activated_by_id,
-                beneficiary_id=beneficiary_id,
+
+        with transaction.atomic():
+            existing = (
+                TemporaryAccessGrant.objects.select_for_update()
+                .filter(
+                    tenant_id=scope_ref.tenant_id,
+                    activated_by_id=activated_by_id,
+                    mode=TemporaryAccessMode.BREAK_GLASS,
+                    idempotency_key=idempotency_key,
+                )
+                .first()
+            )
+            if existing is not None:
+                self._validate_break_glass_fingerprint(
+                    grant=existing,
+                    context=context,
+                    beneficiary_id=beneficiary_id,
+                    privilege_keys=keys,
+                    emergency_reason=reason,
+                    ttl=ttl,
+                )
+                return existing
+
+            if self.break_glass_checker is None:
+                raise TemporaryAccessControlError("未配置 BreakGlassAuthorityChecker，必须 fail closed。")
+            try:
+                authority = self.break_glass_checker.can_activate(
+                    actor_id=activated_by_id,
+                    beneficiary_id=beneficiary_id,
+                    scope_ref=scope_ref,
+                    privilege_keys=keys,
+                    at=moment,
+                )
+            except Exception as exc:
+                raise TemporaryAccessControlError(
+                    "Break-glass authority checker 失败，已 fail closed。"
+                ) from exc
+            if not authority.allowed:
+                raise TemporaryAccessControlError("激活主体当前没有 Break-glass authority。")
+            boundary = self.boundary_resolver.resolve(
+                principal_id=beneficiary.id,
                 scope_ref=scope_ref,
-                privilege_keys=keys,
+                candidate_privilege_keys=keys,
                 at=moment,
             )
-        except Exception as exc:
-            raise TemporaryAccessControlError("Break-glass authority checker 失败，已 fail closed。") from exc
-        if not authority.allowed:
-            raise TemporaryAccessControlError("激活主体当前没有 Break-glass authority。")
-        boundary = self.boundary_resolver.resolve(
-            principal_id=beneficiary.id,
-            scope_ref=scope_ref,
-            candidate_privilege_keys=keys,
-            at=moment,
-        )
-        if set(boundary.allowed_privilege_keys) != set(keys):
-            raise TemporaryAccessControlError("Break-glass 请求超出 beneficiary PermissionBoundary。")
-        with transaction.atomic():
-            grant = TemporaryAccessGrant(
-                tenant_id=scope_ref.tenant_id,
-                beneficiary=beneficiary,
-                mode=TemporaryAccessMode.BREAK_GLASS,
-                scope_type=context.exact_type,
-                valid_from=moment,
-                valid_until=moment + ttl,
-                reason=emergency_reason.strip(),
-                emergency_reason=emergency_reason.strip(),
-                notification_required=True,
-                activated_by_id=activated_by_id,
+            if set(boundary.allowed_privilege_keys) != set(keys):
+                raise TemporaryAccessControlError(
+                    "Break-glass 请求超出 beneficiary PermissionBoundary。"
+                )
+
+            defaults = {
+                "beneficiary": beneficiary,
+                "scope_type": context.exact_type,
+                "valid_from": moment,
+                "valid_until": moment + ttl,
+                "reason": reason,
+                "emergency_reason": reason,
+                "notification_required": True,
+                "activation_authority_snapshot": authority.evidence,
                 **_ElevationQuery.exact_scope_defaults(context),
+            }
+            grant, created = TemporaryAccessGrant.objects.get_or_create(
+                tenant_id=scope_ref.tenant_id,
+                activated_by_id=activated_by_id,
+                mode=TemporaryAccessMode.BREAK_GLASS,
+                idempotency_key=idempotency_key,
+                defaults=defaults,
             )
+            grant = TemporaryAccessGrant.objects.select_for_update().get(pk=grant.pk)
+            if not created:
+                self._validate_break_glass_fingerprint(
+                    grant=grant,
+                    context=context,
+                    beneficiary_id=beneficiary_id,
+                    privilege_keys=keys,
+                    emergency_reason=reason,
+                    ttl=ttl,
+                )
+                return grant
             grant.full_clean()
             grant.save()
             for privilege in privileges:
@@ -778,12 +826,43 @@ class TemporaryAccessService:
                 link.save()
             return grant
 
+    @staticmethod
+    def _validate_break_glass_fingerprint(
+        *,
+        grant: TemporaryAccessGrant,
+        context: _ScopeContext,
+        beneficiary_id: UUID,
+        privilege_keys: tuple[str, ...],
+        emergency_reason: str,
+        ttl: timedelta,
+    ) -> None:
+        expected_scope = _ElevationQuery.exact_scope_defaults(context)
+        existing_keys = set(
+            TemporaryAccessGrantPrivilege.objects.filter(grant=grant).values_list(
+                "privilege__key", flat=True
+            )
+        )
+        if (
+            grant.beneficiary_id != beneficiary_id
+            or grant.scope_type != context.exact_type
+            or grant.workspace_id != expected_scope["workspace_id"]
+            or grant.project_id != expected_scope["project_id"]
+            or grant.environment_id != expected_scope["environment_id"]
+            or grant.emergency_reason != emergency_reason
+            or grant.reason != emergency_reason
+            or grant.valid_until - grant.valid_from != ttl
+            or existing_keys != set(privilege_keys)
+        ):
+            raise TemporaryAccessControlError(
+                "同一 Break-glass idempotency_key 被用于不同 request fingerprint。"
+            )
+
     def revoke(
         self,
         *,
         grant_id: UUID,
         revoked_by_id: UUID,
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> TemporaryAccessGrant:
         moment = at or timezone.now()
         with transaction.atomic():
@@ -833,7 +912,7 @@ class TemporaryAccessResolver:
         *,
         principal_id: UUID,
         scope_ref: ElevatedScopeRef,
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> TemporaryAccessResolution:
         moment = at or timezone.now()
         context = _ScopeLoader.load(scope_ref)
@@ -900,9 +979,9 @@ class DelegationService:
         scope_ref: ElevatedScopeRef,
         privilege_keys: tuple[str, ...],
         reason: str,
-        valid_until: object,
+        valid_until: datetime,
         created_by_id: UUID,
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> DelegationGrant:
         moment = at or timezone.now()
         if delegator_id == delegatee_id:
@@ -911,20 +990,25 @@ class DelegationService:
             raise DelegationControlError("Delegation.valid_until 必须晚于当前时间。")
         if not reason.strip():
             raise DelegationControlError("Delegation 必须记录委托原因。")
-        context = _ScopeLoader.load(scope_ref)
-        delegator = _ElevationQuery.active_principal(
-            principal_id=delegator_id,
-            tenant_id=scope_ref.tenant_id,
-        )
-        delegatee = _ElevationQuery.active_principal(
-            principal_id=delegatee_id,
-            tenant_id=scope_ref.tenant_id,
-        )
-        _ElevationQuery.governance_actor(
-            principal_id=created_by_id,
-            tenant_id=scope_ref.tenant_id,
-        )
-        privileges = _ElevationQuery.active_privileges(privilege_keys)
+        try:
+            context = _ScopeLoader.load(scope_ref)
+            delegator = _ElevationQuery.active_principal(
+                principal_id=delegator_id,
+                tenant_id=scope_ref.tenant_id,
+            )
+            delegatee = _ElevationQuery.active_principal(
+                principal_id=delegatee_id,
+                tenant_id=scope_ref.tenant_id,
+            )
+            _ElevationQuery.governance_actor(
+                principal_id=created_by_id,
+                tenant_id=scope_ref.tenant_id,
+            )
+            privileges = _ElevationQuery.active_privileges(privilege_keys)
+        except ElevatedAccessError as exc:
+            raise DelegationControlError(
+                "Delegation 主体、Scope 或 Privilege 无效，已 fail closed。"
+            ) from exc
         requested = tuple(privilege.key for privilege in privileges)
         if self.authority_checker is None:
             raise DelegationControlError("未配置 DelegationAuthorityChecker，必须 fail closed。")
@@ -978,7 +1062,7 @@ class DelegationService:
         *,
         delegation_id: UUID,
         revoked_by_id: UUID,
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> DelegationGrant:
         moment = at or timezone.now()
         with transaction.atomic():
@@ -1026,7 +1110,7 @@ class DelegationResolver:
         *,
         delegatee_id: UUID,
         scope_ref: ElevatedScopeRef,
-        at: object | None = None,
+        at: datetime | None = None,
     ) -> DelegationResolution:
         moment = at or timezone.now()
         context = _ScopeLoader.load(scope_ref)

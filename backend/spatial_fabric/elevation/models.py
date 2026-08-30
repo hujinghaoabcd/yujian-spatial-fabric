@@ -27,6 +27,10 @@ resource_kind_validator = RegexValidator(
     regex=r"^[a-z][a-z0-9_.:-]{0,159}$",
     message="resource_kind 必须以小写字母开头，且只能包含小写字母、数字、._:-。",
 )
+idempotency_key_validator = RegexValidator(
+    regex=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$",
+    message="idempotency_key 只能包含字母、数字、._:/-，且必须以字母或数字开头。",
+)
 
 
 class ElevatedScopeType(models.TextChoices):
@@ -634,6 +638,12 @@ class ApprovalDecision(UUID7Model, TimeStampedModel):
         verbose_name="审批主体",
     )
     comment = models.TextField("审批意见", blank=True)
+    authority_snapshot = models.JSONField(
+        "审批 authority evidence",
+        default=dict,
+        blank=True,
+        help_text="保存作出审批决定时 authority checker 的可解释证据。",
+    )
     decided_at = models.DateTimeField("审批时间", default=timezone.now)
 
     class Meta:
@@ -710,6 +720,20 @@ class TemporaryAccessGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
     reason = models.TextField("提升原因")
     emergency_reason = models.TextField("紧急访问原因", blank=True, default="")
     notification_required = models.BooleanField("必须触发安全通知", default=False)
+    idempotency_key = models.CharField(
+        "激活幂等键",
+        max_length=160,
+        validators=[idempotency_key_validator],
+        blank=True,
+        default="",
+        help_text="BREAK_GLASS 必填；JIT 通过 source ApprovalRequest 自带幂等 identity。",
+    )
+    activation_authority_snapshot = models.JSONField(
+        "激活 authority evidence",
+        default=dict,
+        blank=True,
+        help_text="Break-glass 激活时保存 authority checker evidence；JIT 通常为空。",
+    )
     activated_by = models.ForeignKey(
         Principal,
         on_delete=models.PROTECT,
@@ -743,6 +767,7 @@ class TemporaryAccessGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
                         mode=TemporaryAccessMode.JIT,
                         source_approval_request__isnull=False,
                         emergency_reason="",
+                        idempotency_key="",
                     )
                     | (
                         models.Q(
@@ -750,6 +775,7 @@ class TemporaryAccessGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
                             notification_required=True,
                         )
                         & ~models.Q(emergency_reason="")
+                        & ~models.Q(idempotency_key="")
                     )
                 ),
                 name="sf_tmpgrant_mode_ck",
@@ -758,6 +784,11 @@ class TemporaryAccessGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
                 fields=["source_approval_request"],
                 condition=models.Q(source_approval_request__isnull=False),
                 name="sf_tmpgrant_apreq_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "activated_by", "idempotency_key"],
+                condition=models.Q(mode=TemporaryAccessMode.BREAK_GLASS),
+                name="sf_tmpgrant_bg_idem_uniq",
             ),
             models.CheckConstraint(
                 condition=(
@@ -817,15 +848,21 @@ class TemporaryAccessGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
                 errors["source_approval_request"] = "JIT 来源 ApprovalRequest purpose 必须为 JIT_ELEVATION。"
             if self.emergency_reason:
                 errors["emergency_reason"] = "JIT 不应携带 emergency_reason。"
+            if self.idempotency_key:
+                errors["idempotency_key"] = "JIT 不使用 Break-glass idempotency_key。"
         elif self.mode == TemporaryAccessMode.BREAK_GLASS:
             if not self.emergency_reason.strip():
                 errors["emergency_reason"] = "Break-glass 必须记录强理由。"
             if not self.notification_required:
                 errors["notification_required"] = "Break-glass 必须触发安全通知要求。"
+            if not self.idempotency_key:
+                errors["idempotency_key"] = "Break-glass 必须提供 idempotency_key。"
         else:
             errors["mode"] = "未知 TemporaryAccess mode。"
         if not self.reason.strip():
             errors["reason"] = "TemporaryAccessGrant 必须记录原因。"
+        if not isinstance(self.activation_authority_snapshot, dict):
+            errors["activation_authority_snapshot"] = "activation_authority_snapshot 必须是 JSON object。"
         if self.valid_from and self.valid_until and self.valid_until <= self.valid_from:
             errors["valid_until"] = "TemporaryAccessGrant 失效时间必须晚于生效时间。"
         if errors:

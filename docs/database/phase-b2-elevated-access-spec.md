@@ -438,3 +438,19 @@ B2.4 不做：
 - 把 elevated access 写进普通 RoleAssignment。
 
 这些边界后续若改变，必须通过正式 Spec/ADR/Amendment，而不是静默扩张当前模型。
+
+---
+
+## 11. Schema freeze 前安全补充
+
+B2.4 migration 冻结前进一步明确：
+
+1. `ApprovalService.decide()` 必须注入 `ApprovalAuthorityChecker`；仅“同租户且不是 requester”不足以证明审批权限。checker 缺失/异常/拒绝时 fail closed。
+2. `ApprovalDecision.authority_snapshot` 保存作出最终决定时的 checker evidence，避免只知道“谁批准了”却无法解释“凭什么有权批准”。
+3. `TemporaryAccessGrant.activation_authority_snapshot` 保存 Break-glass 激活时 checker evidence；JIT 的主要 authority evidence 来自 source ApprovalRequest/Decision。
+4. Break-glass 必须携带 `idempotency_key`。同 Tenant + activated_by + key 唯一；同 key 重试只有 request fingerprint 完全一致时才返回原 grant，否则 fail closed。
+5. Break-glass fingerprint 至少覆盖 beneficiary、Scope、Privilege set、emergency reason 与 TTL，防止把一个成功幂等键复用于另一种紧急访问。
+6. JIT 不使用 Break-glass idempotency key；其幂等 identity 由唯一的 source ApprovalRequest 提供。
+
+这些补充不改变 B2.4 总体对象边界，只把 authority 与网络重试的审计/并发语义补齐。
+

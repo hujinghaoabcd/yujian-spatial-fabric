@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -16,7 +16,6 @@ from spatial_fabric.elevation.models import (
     ApprovalTargetType,
     DelegationGrantPrivilege,
     ElevatedScopeType,
-    EvidenceStatus,
     PermissionBoundary,
     PermissionBoundaryPrivilege,
     TemporaryAccessGrant,
@@ -132,7 +131,7 @@ class AllowApprovalChecker(ApprovalAuthorityChecker):
     def can_decide(
         self,
         *,
-        approver_id: object,
+        approver_id: UUID,
         approval_request: object,
         at: datetime,
     ) -> AuthorityCheck:
@@ -143,8 +142,8 @@ class AllowBreakGlassChecker(BreakGlassAuthorityChecker):
     def can_activate(
         self,
         *,
-        actor_id: object,
-        beneficiary_id: object,
+        actor_id: UUID,
+        beneficiary_id: UUID,
         scope_ref: ElevatedScopeRef,
         privilege_keys: tuple[str, ...],
         at: datetime,
@@ -168,7 +167,7 @@ class StaticDelegationChecker(DelegationAuthorityChecker):
     def allowed_privileges(
         self,
         *,
-        delegator_id: object,
+        delegator_id: UUID,
         scope_ref: ElevatedScopeRef,
         requested_privilege_keys: tuple[str, ...],
         at: datetime,
