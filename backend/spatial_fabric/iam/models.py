@@ -17,6 +17,9 @@ Phase B1 只建立 RBAC + Scope Inheritance 的稳定输入，不在这里实现
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import ClassVar
+
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
@@ -61,11 +64,13 @@ class Account(AbstractUser):
     """
 
     id = models.UUIDField(primary_key=True, default=uuid7, editable=False)
-    username = None
+    # Email-only AbstractUser 是 Django 支持的模式；django-stubs 仍保留父类 username: str。
+    username = None  # type: ignore[assignment]
     email = models.EmailField("邮箱", unique=True)
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS: list[str] = []
-    objects = AccountManager()
+    REQUIRED_FIELDS: ClassVar[list[str]] = []
+    # AbstractUser 将 objects 声明为 UserManager；本项目有意使用 email-only BaseUserManager。
+    objects: ClassVar[AccountManager] = AccountManager()  # type: ignore[assignment]
 
     def __str__(self) -> str:
         return self.email
@@ -335,7 +340,7 @@ class GroupMembership(UUID7Model, TimeStampedModel, ConcurrentModel):
         if errors:
             raise ValidationError(errors)
 
-    def is_currently_effective(self, *, at=None) -> bool:
+    def is_currently_effective(self, *, at: datetime | None = None) -> bool:
         """判断成员关系在某一时刻是否有效；授权查询仍应在数据库层过滤有效窗口。"""
 
         moment = at or timezone.now()
@@ -421,10 +426,11 @@ class RoleDefinition(UUID7Model, TimeStampedModel, ConcurrentModel):
 
         super().clean()
         errors: dict[str, str] = {}
-        if self.created_by_id:
-            if self.tenant_id is None and self.created_by.tenant_id is not None:
+        creator = self.created_by if self.created_by_id else None
+        if creator is not None:
+            if self.tenant_id is None and creator.tenant_id is not None:
                 errors["created_by"] = "平台级 Role 只能由平台主体创建，或留空交由系统 migration 创建。"
-            elif self.tenant_id and self.created_by.tenant_id not in (None, self.tenant_id):
+            elif self.tenant_id and creator.tenant_id not in (None, self.tenant_id):
                 errors["created_by"] = "Tenant Role 创建主体必须是平台主体或属于同一租户。"
 
         if not isinstance(self.allowed_scope_types, list):
@@ -644,23 +650,30 @@ class RoleAssignment(UUID7Model, TimeStampedModel, ConcurrentModel):
 
         super().clean()
         errors: dict[str, str] = {}
+        principal = self.principal if self.principal_id else None
+        group = self.group if self.group_id else None
+        role = self.role if self.role_id else None
+        workspace = self.workspace if self.workspace_id else None
+        project = self.project if self.project_id else None
+        environment = self.environment if self.environment_id else None
+        granted_by = self.granted_by if self.granted_by_id else None
 
         # subject XOR 同时在数据库 CHECK 和应用层做，给 API/Service 返回更可读的错误。
         if bool(self.principal_id) == bool(self.group_id):
             errors["principal"] = "RoleAssignment 必须且只能指定 principal 或 group 之一。"
 
-        if self.principal_id and self.principal.tenant_id != self.tenant_id:
+        if principal is not None and principal.tenant_id != self.tenant_id:
             errors["principal"] = "被授权 Principal 必须属于同一租户。"
-        if self.group_id and self.group.tenant_id != self.tenant_id:
+        if group is not None and group.tenant_id != self.tenant_id:
             errors["group"] = "被授权 Group 必须属于同一租户。"
 
         # 平台 Role（tenant=NULL）可被租户使用；Tenant 自定义 Role 只能在自己的 Tenant 内使用。
-        if self.role_id and self.role.tenant_id not in (None, self.tenant_id):
+        if role is not None and role.tenant_id not in (None, self.tenant_id):
             errors["role"] = "Tenant 自定义 Role 只能分配在其所属租户内。"
-        if self.role_id and not self.role.is_assignable:
+        if role is not None and not role.is_assignable:
             errors["role"] = "该 Role 已标记为不可分配。"
-        if self.role_id and self.role.allowed_scope_types:
-            if self.scope_type not in self.role.allowed_scope_types:
+        if role is not None and role.allowed_scope_types:
+            if self.scope_type not in role.allowed_scope_types:
                 errors["scope_type"] = "当前 Role 不允许分配到该作用域类型。"
 
         # 对 Scope 做应用层一致性校验；数据库 CHECK 只负责形状，无法跨表比较 tenant_id。
@@ -668,24 +681,24 @@ class RoleAssignment(UUID7Model, TimeStampedModel, ConcurrentModel):
             if self.workspace_id or self.project_id or self.environment_id:
                 errors["scope_type"] = "TENANT scope 不能同时指定 Workspace/Project/Environment。"
         elif self.scope_type == RoleScopeType.WORKSPACE:
-            if not self.workspace_id or self.project_id or self.environment_id:
+            if workspace is None or self.project_id or self.environment_id:
                 errors["workspace"] = "WORKSPACE scope 必须且只能指定 Workspace。"
-            elif self.workspace.tenant_id != self.tenant_id:
+            elif workspace.tenant_id != self.tenant_id:
                 errors["workspace"] = "Workspace 必须属于 RoleAssignment.tenant。"
         elif self.scope_type == RoleScopeType.PROJECT:
-            if self.workspace_id or not self.project_id or self.environment_id:
+            if self.workspace_id or project is None or self.environment_id:
                 errors["project"] = "PROJECT scope 必须且只能指定 Project。"
-            elif self.project.tenant_id != self.tenant_id:
+            elif project.tenant_id != self.tenant_id:
                 errors["project"] = "Project 必须属于 RoleAssignment.tenant。"
         elif self.scope_type == RoleScopeType.ENVIRONMENT:
-            if self.workspace_id or self.project_id or not self.environment_id:
+            if self.workspace_id or self.project_id or environment is None:
                 errors["environment"] = "ENVIRONMENT scope 必须且只能指定 Environment。"
-            elif self.environment.tenant_id != self.tenant_id:
+            elif environment.tenant_id != self.tenant_id:
                 errors["environment"] = "Environment 必须属于 RoleAssignment.tenant。"
         else:
             errors["scope_type"] = "未知的 RoleAssignment scope_type。"
 
-        if self.granted_by_id and self.granted_by.tenant_id not in (None, self.tenant_id):
+        if granted_by is not None and granted_by.tenant_id not in (None, self.tenant_id):
             errors["granted_by"] = "授权主体必须是平台主体或属于同一租户。"
         if self.valid_from and self.valid_until and self.valid_until <= self.valid_from:
             errors["valid_until"] = "失效时间必须晚于生效时间。"
@@ -695,7 +708,7 @@ class RoleAssignment(UUID7Model, TimeStampedModel, ConcurrentModel):
         if errors:
             raise ValidationError(errors)
 
-    def is_currently_effective(self, *, at=None) -> bool:
+    def is_currently_effective(self, *, at: datetime | None = None) -> bool:
         """判断 RoleAssignment 在某时刻是否有效，不包含 B2 Policy/Entitlement/Quota 计算。"""
 
         moment = at or timezone.now()

@@ -200,12 +200,14 @@ class Asset(UUID7Model, TimeStampedModel, ConcurrentModel):
         super().clean()
         errors: dict[str, str] = {}
 
-        if self.workspace_id and self.workspace.tenant_id != self.tenant_id:
+        workspace = self.workspace if self.workspace_id else None
+        project = self.project if self.project_id else None
+        if workspace is not None and workspace.tenant_id != self.tenant_id:
             errors["workspace"] = "Asset.workspace 必须属于 Asset.tenant。"
-        if self.project_id:
-            if self.project.tenant_id != self.tenant_id:
+        if project is not None:
+            if project.tenant_id != self.tenant_id:
                 errors["project"] = "Asset.project 必须属于 Asset.tenant。"
-            if self.workspace_id and self.project.workspace_id != self.workspace_id:
+            if self.workspace_id and project.workspace_id != self.workspace_id:
                 errors["project"] = "Asset.project 必须属于指定的 Asset.workspace。"
         for field_name, principal in (
             ("owner_principal", self.owner_principal),
@@ -303,8 +305,11 @@ class AssetVersion(UUID7Model, TimeStampedModel):
         if self.created_by_id and self.asset_id:
             if self.created_by.tenant_id not in (None, self.asset.tenant_id):
                 errors["created_by"] = "版本创建主体必须是平台主体或属于 Asset 所在租户。"
-        if self.replacement_version_id:
-            if self.replacement_version.asset_id != self.asset_id:
+        replacement_version = (
+            self.replacement_version if self.replacement_version_id else None
+        )
+        if replacement_version is not None:
+            if replacement_version.asset_id != self.asset_id:
                 errors["replacement_version"] = "替代版本必须属于同一个 Asset。"
             if self.replacement_version_id == self.id:
                 errors["replacement_version"] = "AssetVersion 不能把自己设置为替代版本。"
@@ -478,10 +483,14 @@ class Distribution(UUID7Model, TimeStampedModel, ConcurrentModel):
         expected_tenant_id = self.asset_version.asset.tenant_id if self.asset_version_id else None
         if expected_tenant_id and self.tenant_id != expected_tenant_id:
             errors["tenant"] = "Distribution.tenant 必须与 AssetVersion 所属租户一致。"
-        if self.artifact_id and expected_tenant_id and self.artifact.tenant_id != expected_tenant_id:
+        artifact = self.artifact if self.artifact_id else None
+        if artifact is not None and expected_tenant_id and artifact.tenant_id != expected_tenant_id:
             errors["artifact"] = "Distribution.artifact 必须与 AssetVersion 属于同一租户。"
-        if self.source_distribution_id:
-            source_tenant_id = self.source_distribution.asset_version.asset.tenant_id
+        source_distribution = (
+            self.source_distribution if self.source_distribution_id else None
+        )
+        if source_distribution is not None:
+            source_tenant_id = source_distribution.asset_version.asset.tenant_id
             if expected_tenant_id and source_tenant_id != expected_tenant_id:
                 errors["source_distribution"] = "来源 Distribution 不得跨租户引用。"
             if self.source_distribution_id == self.id:
