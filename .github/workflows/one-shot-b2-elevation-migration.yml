@@ -61,6 +61,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import textwrap
 
           def replace_once(path: Path, old: str, new: str, label: str) -> None:
               text = path.read_text(encoding="utf-8")
@@ -159,17 +160,17 @@ jobs:
           replace_once(
               models_path,
               '''                    models.Q(
-                          mode=TemporaryAccessMode.JIT,
-                          source_approval_request__isnull=False,
-                          emergency_reason="",
-                      )
+                                  mode=TemporaryAccessMode.JIT,
+                                  source_approval_request__isnull=False,
+                                  emergency_reason="",
+                              )
           ''',
               '''                    models.Q(
-                          mode=TemporaryAccessMode.JIT,
-                          source_approval_request__isnull=False,
-                          emergency_reason="",
-                          idempotency_key="",
-                      )
+                                  mode=TemporaryAccessMode.JIT,
+                                  source_approval_request__isnull=False,
+                                  emergency_reason="",
+                                  idempotency_key="",
+                              )
           ''',
               "JIT mode shape idempotency",
           )
@@ -177,17 +178,17 @@ jobs:
           replace_once(
               models_path,
               '''                        models.Q(
-                              mode=TemporaryAccessMode.BREAK_GLASS,
-                              notification_required=True,
-                          )
-                          & ~models.Q(emergency_reason="")
+                                      mode=TemporaryAccessMode.BREAK_GLASS,
+                                      notification_required=True,
+                                  )
+                                  & ~models.Q(emergency_reason="")
           ''',
               '''                        models.Q(
-                              mode=TemporaryAccessMode.BREAK_GLASS,
-                              notification_required=True,
-                          )
-                          & ~models.Q(emergency_reason="")
-                          & ~models.Q(idempotency_key="")
+                                      mode=TemporaryAccessMode.BREAK_GLASS,
+                                      notification_required=True,
+                                  )
+                                  & ~models.Q(emergency_reason="")
+                                  & ~models.Q(idempotency_key="")
           ''',
               "break-glass mode shape idempotency",
           )
@@ -195,21 +196,21 @@ jobs:
           replace_once(
               models_path,
               '''            models.UniqueConstraint(
-                  fields=["source_approval_request"],
-                  condition=models.Q(source_approval_request__isnull=False),
-                  name="sf_tmpgrant_apreq_uniq",
-              ),
+                          fields=["source_approval_request"],
+                          condition=models.Q(source_approval_request__isnull=False),
+                          name="sf_tmpgrant_apreq_uniq",
+                      ),
           ''',
               '''            models.UniqueConstraint(
-                  fields=["source_approval_request"],
-                  condition=models.Q(source_approval_request__isnull=False),
-                  name="sf_tmpgrant_apreq_uniq",
-              ),
-              models.UniqueConstraint(
-                  fields=["tenant", "activated_by", "idempotency_key"],
-                  condition=models.Q(mode=TemporaryAccessMode.BREAK_GLASS),
-                  name="sf_tmpgrant_bg_idem_uniq",
-              ),
+                          fields=["source_approval_request"],
+                          condition=models.Q(source_approval_request__isnull=False),
+                          name="sf_tmpgrant_apreq_uniq",
+                      ),
+                      models.UniqueConstraint(
+                          fields=["tenant", "activated_by", "idempotency_key"],
+                          condition=models.Q(mode=TemporaryAccessMode.BREAK_GLASS),
+                          name="sf_tmpgrant_bg_idem_uniq",
+                      ),
           ''',
               "break-glass idempotency unique",
           )
@@ -217,34 +218,34 @@ jobs:
           replace_once(
               models_path,
               '''        if self.mode == TemporaryAccessMode.JIT:
-                  if approval is None:
-                      errors["source_approval_request"] = "JIT 必须来源于已批准 ApprovalRequest。"
-                  elif approval.purpose != ApprovalPurpose.JIT_ELEVATION:
-                      errors["source_approval_request"] = "JIT 来源 ApprovalRequest purpose 必须为 JIT_ELEVATION。"
-                  if self.emergency_reason:
-                      errors["emergency_reason"] = "JIT 不应携带 emergency_reason。"
-              elif self.mode == TemporaryAccessMode.BREAK_GLASS:
-                  if not self.emergency_reason.strip():
-                      errors["emergency_reason"] = "Break-glass 必须记录强理由。"
-                  if not self.notification_required:
-                      errors["notification_required"] = "Break-glass 必须触发安全通知要求。"
+                      if approval is None:
+                          errors["source_approval_request"] = "JIT 必须来源于已批准 ApprovalRequest。"
+                      elif approval.purpose != ApprovalPurpose.JIT_ELEVATION:
+                          errors["source_approval_request"] = "JIT 来源 ApprovalRequest purpose 必须为 JIT_ELEVATION。"
+                      if self.emergency_reason:
+                          errors["emergency_reason"] = "JIT 不应携带 emergency_reason。"
+                  elif self.mode == TemporaryAccessMode.BREAK_GLASS:
+                      if not self.emergency_reason.strip():
+                          errors["emergency_reason"] = "Break-glass 必须记录强理由。"
+                      if not self.notification_required:
+                          errors["notification_required"] = "Break-glass 必须触发安全通知要求。"
           ''',
               '''        if self.mode == TemporaryAccessMode.JIT:
-                  if approval is None:
-                      errors["source_approval_request"] = "JIT 必须来源于已批准 ApprovalRequest。"
-                  elif approval.purpose != ApprovalPurpose.JIT_ELEVATION:
-                      errors["source_approval_request"] = "JIT 来源 ApprovalRequest purpose 必须为 JIT_ELEVATION。"
-                  if self.emergency_reason:
-                      errors["emergency_reason"] = "JIT 不应携带 emergency_reason。"
-                  if self.idempotency_key:
-                      errors["idempotency_key"] = "JIT 不使用 Break-glass idempotency_key。"
-              elif self.mode == TemporaryAccessMode.BREAK_GLASS:
-                  if not self.emergency_reason.strip():
-                      errors["emergency_reason"] = "Break-glass 必须记录强理由。"
-                  if not self.notification_required:
-                      errors["notification_required"] = "Break-glass 必须触发安全通知要求。"
-                  if not self.idempotency_key:
-                      errors["idempotency_key"] = "Break-glass 必须提供 idempotency_key。"
+                      if approval is None:
+                          errors["source_approval_request"] = "JIT 必须来源于已批准 ApprovalRequest。"
+                      elif approval.purpose != ApprovalPurpose.JIT_ELEVATION:
+                          errors["source_approval_request"] = "JIT 来源 ApprovalRequest purpose 必须为 JIT_ELEVATION。"
+                      if self.emergency_reason:
+                          errors["emergency_reason"] = "JIT 不应携带 emergency_reason。"
+                      if self.idempotency_key:
+                          errors["idempotency_key"] = "JIT 不使用 Break-glass idempotency_key。"
+                  elif self.mode == TemporaryAccessMode.BREAK_GLASS:
+                      if not self.emergency_reason.strip():
+                          errors["emergency_reason"] = "Break-glass 必须记录强理由。"
+                      if not self.notification_required:
+                          errors["notification_required"] = "Break-glass 必须触发安全通知要求。"
+                      if not self.idempotency_key:
+                          errors["idempotency_key"] = "Break-glass 必须提供 idempotency_key。"
           ''',
               "temporary access clean mode rules",
           )
@@ -252,12 +253,12 @@ jobs:
           replace_once(
               models_path,
               '''        if not self.reason.strip():
-                  errors["reason"] = "TemporaryAccessGrant 必须记录原因。"
+                      errors["reason"] = "TemporaryAccessGrant 必须记录原因。"
           ''',
               '''        if not self.reason.strip():
-                  errors["reason"] = "TemporaryAccessGrant 必须记录原因。"
-              if not isinstance(self.activation_authority_snapshot, dict):
-                  errors["activation_authority_snapshot"] = "activation_authority_snapshot 必须是 JSON object。"
+                      errors["reason"] = "TemporaryAccessGrant 必须记录原因。"
+                  if not isinstance(self.activation_authority_snapshot, dict):
+                      errors["activation_authority_snapshot"] = "activation_authority_snapshot 必须是 JSON object。"
           ''',
               "temporary authority snapshot validation",
           )
@@ -276,7 +277,7 @@ jobs:
               "unused QuerySet import",
           )
           replace_all_exact(services_path, "at: object | None", "at: datetime | None", 12, "nullable datetime annotations")
-          replace_all_exact(services_path, "at: object", "at: datetime", 3, "protocol datetime annotations")
+          replace_all_exact(services_path, " at: object", " at: datetime", 3, "protocol datetime annotations")
           replace_all_exact(services_path, "expires_at: object", "expires_at: datetime", 1, "approval expires_at annotation")
           replace_all_exact(services_path, "requested_valid_until: object | None", "requested_valid_until: datetime | None", 1, "requested_valid_until annotation")
           replace_all_exact(services_path, "valid_until: object", "valid_until: datetime", 1, "delegation valid_until annotation")
@@ -285,21 +286,21 @@ jobs:
           replace_once(
               services_path,
               '''            evidence = ApprovalDecision(
-                  approval_request=request,
-                  decision=decision,
-                  approver=approver,
-                  comment=comment,
-                  decided_at=moment,
-              )
+                          approval_request=request,
+                          decision=decision,
+                          approver=approver,
+                          comment=comment,
+                          decided_at=moment,
+                      )
           ''',
               '''            evidence = ApprovalDecision(
-                  approval_request=request,
-                  decision=decision,
-                  approver=approver,
-                  comment=comment,
-                  authority_snapshot=authority.evidence,
-                  decided_at=moment,
-              )
+                          approval_request=request,
+                          decision=decision,
+                          approver=approver,
+                          comment=comment,
+                          authority_snapshot=authority.evidence,
+                          decided_at=moment,
+                      )
           ''',
               "approval evidence persistence",
           )
@@ -455,6 +456,8 @@ jobs:
                       )
 
           '''
+          first_line, separator, remaining_lines = new_break_glass.partition("\n")
+          new_break_glass = first_line + separator + textwrap.indent(remaining_lines, "    ")
           replace_block(
               services_path,
               "    def activate_break_glass(\n",
