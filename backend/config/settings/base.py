@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "spatial_fabric.common",
     "spatial_fabric.iam",
     "spatial_fabric.tenancy",
+    "spatial_fabric.governance",
     "spatial_fabric.assets",
 ]
 
