@@ -1,0 +1,194 @@
+name: One-shot B2.3 commercial finalize v2
+
+on:
+  push:
+    branches:
+      - feat/phase-b2-governance-controls
+
+permissions:
+  contents: write
+
+jobs:
+  finalize-v2:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: spatial_fabric_test
+          POSTGRES_USER: spatial_fabric
+          POSTGRES_PASSWORD: spatial_fabric_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spatial_fabric -d spatial_fabric_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      SF_ENV: test
+      SF_SECRET_KEY: ci-only-not-production
+      POSTGRES_DB: spatial_fabric_test
+      POSTGRES_USER: spatial_fabric
+      POSTGRES_PASSWORD: spatial_fabric_test
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/phase-b2-governance-controls
+          fetch-depth: 0
+
+      - name: 安装 GeoDjango 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev libgeos-dev
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 安装 Python 依赖
+        run: uv sync --group dev
+
+      - name: 复用已验证 B2.3 收口补丁并补齐具体 Scope 类型
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          # 先复用上一轮已经通过 Django check、空 PostGIS migrate、75 tests、Ruff 的精确补丁。
+          workflow_path = Path(".github/workflows/one-shot-b2-commercial-finalize.yml")
+          workflow_text = workflow_path.read_text(encoding="utf-8")
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "\n          PY\n"
+          start = workflow_text.find(start_marker)
+          if start == -1:
+              raise SystemExit("无法定位已验证 finalize Python patch 起点。")
+          start += len(start_marker)
+          end = workflow_text.find(end_marker, start)
+          if end == -1:
+              raise SystemExit("无法定位已验证 finalize Python patch 终点。")
+          patch_source = textwrap.dedent(workflow_text[start:end])
+          exec(compile(patch_source, str(workflow_path), "exec"), {})
+
+          models_path = Path("backend/spatial_fabric/commercial/models.py")
+          text = models_path.read_text(encoding="utf-8")
+
+          def replace_exact(old: str, new: str, expected: int, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{label}: expected {expected} anchors, found {count}.")
+              text = text.replace(old, new)
+
+          # 两个 scope helper 都实际接收 tenancy model；TYPE_CHECKING 避免运行时循环导入。
+          replace_exact(
+              "from datetime import datetime\n",
+              "from datetime import datetime\nfrom typing import TYPE_CHECKING\n",
+              1,
+              "TYPE_CHECKING import",
+          )
+          replace_exact(
+              "from spatial_fabric.iam.models import Principal\n",
+              "from spatial_fabric.iam.models import Principal\n\n"
+              "if TYPE_CHECKING:\n"
+              "    from spatial_fabric.tenancy.models import Environment, Project, Workspace\n",
+              1,
+              "tenancy type-only imports",
+          )
+          replace_exact(
+              "        workspace: object | None,",
+              "        workspace: Workspace | None,",
+              2,
+              "workspace helper annotations",
+          )
+          replace_exact(
+              "        project: object | None,",
+              "        project: Project | None,",
+              2,
+              "project helper annotations",
+          )
+          replace_exact(
+              "        environment: object | None,",
+              "        environment: Environment | None,",
+              2,
+              "environment helper annotations",
+          )
+
+          # UsageReservation 必须对被访问的局部变量本身判空，mypy 才能可靠收窄。
+          replace_exact(
+              "            if not self.workspace_id or self.project_id or self.environment_id:",
+              "            if workspace is None or self.project_id or self.environment_id:",
+              1,
+              "UsageReservation workspace narrowing predicate",
+          )
+          replace_exact(
+              "            if self.workspace_id or not self.project_id or self.environment_id:",
+              "            if self.workspace_id or project is None or self.environment_id:",
+              1,
+              "UsageReservation project narrowing predicate",
+          )
+          replace_exact(
+              "            if self.workspace_id or self.project_id or not self.environment_id:",
+              "            if self.workspace_id or self.project_id or environment is None:",
+              1,
+              "UsageReservation environment narrowing predicate",
+          )
+
+          models_path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: 规范化 B2.3 源文件格式
+        run: >-
+          uv run ruff check --fix
+          backend/spatial_fabric/commercial/models.py
+          backend/spatial_fabric/commercial/services.py
+          backend/spatial_fabric/tests/test_phase_b2_commercial_controls.py
+
+      - name: Django 系统检查
+        run: uv run python backend/manage.py check
+
+      - name: 由 Django 生成 commercial migration
+        run: uv run python backend/manage.py makemigrations commercial
+
+      - name: 从空 PostGIS 执行完整 migrations
+        run: uv run python backend/manage.py migrate --noinput
+
+      - name: 运行全部领域测试
+        run: uv run pytest --cov=backend/spatial_fabric --cov-report=term-missing
+
+      - name: Provider 泄漏检查
+        run: uv run python scripts/check_provider_leaks.py
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: strict mypy
+        run: uv run mypy backend
+
+      - name: 确认生成 migration 后模型同步
+        run: uv run python backend/manage.py makemigrations --check --dry-run
+
+      - name: 提交已验证的 B2.3 源码与 Django migration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            backend/spatial_fabric/commercial/models.py \
+            backend/spatial_fabric/commercial/services.py \
+            backend/spatial_fabric/commercial/migrations/ \
+            backend/spatial_fabric/tests/test_phase_b2_commercial_controls.py
+          if git diff --cached --quiet; then
+            echo "No verified B2.3 changes generated."
+            exit 1
+          fi
+          git commit -m "db: add verified B2.3 commercial controls schema"
+          git push origin HEAD:feat/phase-b2-governance-controls
