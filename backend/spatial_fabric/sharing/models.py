@@ -22,7 +22,6 @@ from django.utils import timezone
 from spatial_fabric.common.models import ConcurrentModel, TimeStampedModel, UUID7Model
 from spatial_fabric.iam.models import Group, Principal, Privilege
 
-
 resource_kind_validator = RegexValidator(
     regex=r"^[a-z][a-z0-9_.:-]{0,159}$",
     message="resource_kind 必须以小写字母开头，且只能包含小写字母、数字、._:-。",
@@ -241,7 +240,10 @@ class ShareGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
         if self.valid_until and moment >= self.valid_until:
             return False
         # B2.2 尚未定义 ShareGrant.conditions evaluator，因此非空条件必须 fail closed。
-        return self.conditions == {}
+        conditions = self.conditions
+        if not isinstance(conditions, dict):
+            return False
+        return len(conditions) == 0
 
     def __str__(self) -> str:
         return f"{self.resource_kind}:{self.resource_id} → {self.grantee_type}"

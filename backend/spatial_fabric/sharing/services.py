@@ -30,8 +30,8 @@ from spatial_fabric.sharing.models import (
     AccessRequestPrivilege,
     AccessRequestStatus,
     ShareGrant,
-    ShareGrantPrivilege,
     ShareGranteeType,
+    ShareGrantPrivilege,
     ShareGrantStatus,
 )
 
@@ -137,6 +137,8 @@ class ShareGrantService:
 
         if (principal_id is None) == (group_id is None):
             raise ShareGrantError("ShareGrant 必须且只能指定 Principal 或 Group 之一。")
+        if valid_until is not None and valid_until <= timezone.now():
+            raise ShareGrantError("新 ShareGrant 的 valid_until 必须晚于当前时间。")
 
         actor = Principal.objects.get(pk=granted_by_id)
         if actor.tenant_id not in (None, tenant_id):
