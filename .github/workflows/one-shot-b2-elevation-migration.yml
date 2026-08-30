@@ -305,6 +305,45 @@ jobs:
               "approval evidence persistence",
           )
 
+          # Delegation 写服务必须把共享查询/Scope 错误收口为稳定领域错误，避免异常类型泄漏。
+          replace_once(
+              services_path,
+              "        context = _ScopeLoader.load(scope_ref)\n"
+              "        delegator = _ElevationQuery.active_principal(\n"
+              "            principal_id=delegator_id,\n"
+              "            tenant_id=scope_ref.tenant_id,\n"
+              "        )\n"
+              "        delegatee = _ElevationQuery.active_principal(\n"
+              "            principal_id=delegatee_id,\n"
+              "            tenant_id=scope_ref.tenant_id,\n"
+              "        )\n"
+              "        _ElevationQuery.governance_actor(\n"
+              "            principal_id=created_by_id,\n"
+              "            tenant_id=scope_ref.tenant_id,\n"
+              "        )\n"
+              "        privileges = _ElevationQuery.active_privileges(privilege_keys)\n",
+              "        try:\n"
+              "            context = _ScopeLoader.load(scope_ref)\n"
+              "            delegator = _ElevationQuery.active_principal(\n"
+              "                principal_id=delegator_id,\n"
+              "                tenant_id=scope_ref.tenant_id,\n"
+              "            )\n"
+              "            delegatee = _ElevationQuery.active_principal(\n"
+              "                principal_id=delegatee_id,\n"
+              "                tenant_id=scope_ref.tenant_id,\n"
+              "            )\n"
+              "            _ElevationQuery.governance_actor(\n"
+              "                principal_id=created_by_id,\n"
+              "                tenant_id=scope_ref.tenant_id,\n"
+              "            )\n"
+              "            privileges = _ElevationQuery.active_privileges(privilege_keys)\n"
+              "        except ElevatedAccessError as exc:\n"
+              "            raise DelegationControlError(\n"
+              "                \"Delegation 主体、Scope 或 Privilege 无效，已 fail closed。\"\n"
+              "            ) from exc\n",
+              "delegation domain error boundary",
+          )
+
           # Replace the whole Break-glass method so idempotency semantics are reviewed as one atomic contract.
           new_break_glass = '''    def activate_break_glass(
               self,
@@ -458,6 +497,14 @@ jobs:
           '''
           first_line, separator, remaining_lines = new_break_glass.partition("\n")
           new_break_glass = first_line + separator + textwrap.indent(remaining_lines, "    ")
+          helper_marker = "\n        @staticmethod\n        def _validate_break_glass_fingerprint(\n"
+          helper_start = new_break_glass.find(helper_marker)
+          if helper_start == -1:
+              raise SystemExit("break-glass fingerprint helper marker not found.")
+          helper_body = new_break_glass[helper_start + 1 :]
+          new_break_glass = new_break_glass[: helper_start + 1] + textwrap.indent(
+              textwrap.dedent(helper_body), "    "
+          )
           replace_block(
               services_path,
               "    def activate_break_glass(\n",
