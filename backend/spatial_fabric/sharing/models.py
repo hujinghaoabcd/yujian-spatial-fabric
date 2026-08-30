@@ -63,6 +63,9 @@ class ShareGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
     ShareGrant 只产生 AuthorizationService 的一个 ALLOW 候选。即使该记录有效，未来 Policy
     evaluator 的 explicit DENY / REQUIRE_APPROVAL 仍然可以阻止动作，因此不得把本模型直接当作
     ``can() == True``。
+
+    同一主体允许在同一 ResourceRef 上存在多条独立 ShareGrant。这样每条授权可以拥有不同的
+    时间窗口、来源和撤销证据；Resolver 保留全部 evidence，只对最终 privilege key 做集合去重。
     """
 
     tenant = models.ForeignKey(
@@ -178,26 +181,6 @@ class ShareGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
                     )
                 ),
                 name="sf_share_revoke_shape_ck",
-            ),
-            # 一个主体在同一 ResourceRef 上只保留一个 ACTIVE grant。撤销后可以新建下一条授权，
-            # 从而既避免并发重复授权，也不覆盖历史审计记录。
-            models.UniqueConstraint(
-                fields=["tenant", "resource_kind", "resource_id", "principal"],
-                condition=models.Q(
-                    status=ShareGrantStatus.ACTIVE,
-                    grantee_type=ShareGranteeType.PRINCIPAL,
-                    principal__isnull=False,
-                ),
-                name="sf_share_active_princ_uniq",
-            ),
-            models.UniqueConstraint(
-                fields=["tenant", "resource_kind", "resource_id", "group"],
-                condition=models.Q(
-                    status=ShareGrantStatus.ACTIVE,
-                    grantee_type=ShareGranteeType.GROUP,
-                    group__isnull=False,
-                ),
-                name="sf_share_active_group_uniq",
             ),
         ]
         indexes = [
