@@ -7,7 +7,6 @@ import pytest
 
 from spatial_fabric.iam.models import Privilege, PrivilegeCategory, PrivilegeRiskLevel
 
-
 CORE_KEYS = {
     "discover",
     "view_metadata",
