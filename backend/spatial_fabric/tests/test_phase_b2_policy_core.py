@@ -16,10 +16,23 @@ from spatial_fabric.governance.models import (
     PolicyVersion,
     PolicyVersionStatus,
 )
-from spatial_fabric.governance.services import PolicyPublicationError, PolicyPublicationService
-from spatial_fabric.iam.models import Group, Principal, PrincipalType, RoleDefinition
-from spatial_fabric.tenancy.models import Environment, EnvironmentType, Project, Tenant, Workspace
-
+from spatial_fabric.governance.services import (
+    PolicyPublicationError,
+    PolicyPublicationService,
+)
+from spatial_fabric.iam.models import (
+    Group,
+    Principal,
+    PrincipalType,
+    RoleDefinition,
+)
+from spatial_fabric.tenancy.models import (
+    Environment,
+    EnvironmentType,
+    Project,
+    Tenant,
+    Workspace,
+)
 
 VALID_SPEC: dict[str, object] = {
     "statements": [
