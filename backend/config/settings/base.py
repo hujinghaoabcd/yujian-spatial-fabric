@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "spatial_fabric.governance",
     "spatial_fabric.sharing",
     "spatial_fabric.commercial",
+    "spatial_fabric.elevation",
     "spatial_fabric.assets",
 ]
 
