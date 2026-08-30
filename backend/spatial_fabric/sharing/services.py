@@ -132,7 +132,7 @@ class ShareGrantService:
         """原子创建 ShareGrant + ShareGrantPrivilege。
 
         被分享主体必须恰好是 Principal/Group 之一；任何 Privilege 不存在/已弃用都会在创建父记录
-        之前失败，因此不会留下“没有动作的空 Grant”。
+        之前失败，因此不会留下“没有动作的空 Grant”。同一主体允许存在多条独立 Grant evidence。
         """
 
         if (principal_id is None) == (group_id is None):
@@ -150,6 +150,8 @@ class ShareGrantService:
                 raise ShareGrantError("被分享 Principal 必须属于资源 Tenant。")
             grantee_type = ShareGranteeType.PRINCIPAL
         else:
+            if group_id is None:
+                raise ShareGrantError("Group ShareGrant 缺少 group_id。")
             group = Group.objects.get(pk=group_id)
             if group.tenant_id != tenant_id:
                 raise ShareGrantError("被分享 Group 必须属于资源 Tenant。")
@@ -187,7 +189,7 @@ class ShareGrantService:
 
     @transaction.atomic
     def revoke_grant(self, *, grant_id: UUID, actor_id: UUID) -> ShareGrant:
-        """原子撤销 ShareGrant；重复撤销保持幂等且不篡改第一次撤销证据。"""
+        """原子撤销单条 ShareGrant；重复撤销幂等且不篡改第一次撤销证据。"""
 
         grant = ShareGrant.objects.select_for_update().get(pk=grant_id)
         actor = Principal.objects.get(pk=actor_id)
@@ -261,11 +263,10 @@ class AccessRequestService:
 
     @transaction.atomic
     def fulfill_request(self, *, access_request_id: UUID, actor_id: UUID) -> AccessRequest:
-        """用正式 ShareGrant 原子满足普通 AccessRequest。
+        """用一条新的正式 ShareGrant evidence 原子满足普通 AccessRequest。
 
-        这不是 B2.4 Approval 引擎。调用本方法前，上层未来必须先完成 Policy/风险判断。若同一
-        requester + ResourceRef 已存在 ACTIVE ShareGrant，本阶段只允许在该 Grant 已覆盖全部请求动作
-        时复用；扩权需走显式 Grant amendment/替换能力，避免静默扩大既有授权。
+        这不是 B2.4 Approval 引擎。调用本方法前，上层未来必须先完成 Policy/风险判断。每个请求生成
+        自己的 ShareGrant，避免悄悄修改已有授权，后续撤销也能精确针对这一条 evidence。
         """
 
         access_request = (
@@ -278,6 +279,11 @@ class AccessRequestService:
         self._assert_decision_actor(access_request=access_request, actor=actor)
         if access_request.status != AccessRequestStatus.PENDING:
             raise AccessRequestError("只有 PENDING AccessRequest 可以被满足。")
+        if (
+            access_request.requested_valid_until is not None
+            and access_request.requested_valid_until <= timezone.now()
+        ):
+            raise AccessRequestError("请求的期望授权时间已经过去，不能生成一个立即失效的 ShareGrant。")
 
         requested_keys = tuple(
             sorted(link.privilege.key for link in access_request.privilege_links.all())
@@ -285,41 +291,15 @@ class AccessRequestService:
         if not requested_keys:
             raise AccessRequestError("AccessRequest 没有 requested Privilege，拒绝 fulfillment。")
 
-        existing = (
-            ShareGrant.objects.select_for_update()
-            .filter(
-                tenant_id=access_request.tenant_id,
-                resource_kind=access_request.resource_kind,
-                resource_id=access_request.resource_id,
-                grantee_type=ShareGranteeType.PRINCIPAL,
-                principal_id=access_request.requester_id,
-                status=ShareGrantStatus.ACTIVE,
-            )
-            .first()
+        grant = self._share_grant_service.create_grant(
+            tenant_id=access_request.tenant_id,
+            resource_kind=access_request.resource_kind,
+            resource_id=access_request.resource_id,
+            privilege_keys=requested_keys,
+            granted_by_id=actor.id,
+            principal_id=access_request.requester_id,
+            valid_until=access_request.requested_valid_until,
         )
-
-        if existing is not None:
-            existing_keys = set(
-                ShareGrantPrivilege.objects.filter(
-                    grant=existing,
-                    privilege__status=PrivilegeStatus.ACTIVE,
-                ).values_list("privilege__key", flat=True)
-            )
-            if not set(requested_keys).issubset(existing_keys):
-                raise AccessRequestError(
-                    "已有 ACTIVE ShareGrant 但未覆盖全部请求动作；B2.2 禁止静默扩权，请显式替换授权。"
-                )
-            grant = existing
-        else:
-            grant = self._share_grant_service.create_grant(
-                tenant_id=access_request.tenant_id,
-                resource_kind=access_request.resource_kind,
-                resource_id=access_request.resource_id,
-                privilege_keys=requested_keys,
-                granted_by_id=actor.id,
-                principal_id=access_request.requester_id,
-                valid_until=access_request.requested_valid_until,
-            )
 
         access_request.status = AccessRequestStatus.FULFILLED
         access_request.fulfilled_by_grant = grant
@@ -394,7 +374,7 @@ class ShareGrantResolver:
         resource_ref: ResourceRef,
         at: datetime | None = None,
     ) -> ShareGrantResolution:
-        """解析目标 Principal 在一个 ResourceRef 上全部有效 ShareGrant evidence。
+        """解析某 Principal 在一个 ResourceRef 上的全部有效 ShareGrant evidence。
 
         B2.2 对 ``ShareGrant.conditions`` 采用 fail-closed：只有空条件 Grant 会进入候选结果。
         """
