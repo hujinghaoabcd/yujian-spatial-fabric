@@ -64,33 +64,46 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          def replace_once(path: Path, old: str, new: str, label: str) -> None:
-              text = path.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected exactly one anchor, found {count}.")
-              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          def replace_lines(
+              path: Path,
+              old: list[str],
+              new: list[str],
+              label: str,
+          ) -> None:
+              lines = path.read_text(encoding="utf-8").splitlines()
+              indexes = [
+                  index
+                  for index in range(len(lines) - len(old) + 1)
+                  if lines[index:index + len(old)] == old
+              ]
+              if len(indexes) != 1:
+                  raise SystemExit(f"{label}: expected exactly one anchor, found {len(indexes)}.")
+              index = indexes[0]
+              lines[index:index + len(old)] = new
+              path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
           models_path = Path("backend/spatial_fabric/commercial/models.py")
           services_path = Path("backend/spatial_fabric/commercial/services.py")
           tests_path = Path("backend/spatial_fabric/tests/test_phase_b2_commercial_controls.py")
 
-          replace_once(
+          replace_lines(
               models_path,
-              '''    enforcement_mode_snapshot = models.CharField(
-                  "执行模式快照", max_length=16, choices=EnforcementMode.choices
-              )
-              projected_value_snapshot = models.PositiveBigIntegerField("决策时 projected 值")
-              exceeded_snapshot = models.BooleanField("决策时是否超限", default=False)
-          ''',
-              '''    enforcement_mode_snapshot = models.CharField(
-                  "执行模式快照", max_length=16, choices=EnforcementMode.choices
-              )
-              consumed_value_snapshot = models.PositiveBigIntegerField("决策时已消费值快照")
-              reserved_value_snapshot = models.PositiveBigIntegerField("决策时已预留值快照")
-              projected_value_snapshot = models.PositiveBigIntegerField("决策时 projected 值")
-              exceeded_snapshot = models.BooleanField("决策时是否超限", default=False)
-          ''',
+              [
+                  '    enforcement_mode_snapshot = models.CharField(',
+                  '        "执行模式快照", max_length=16, choices=EnforcementMode.choices',
+                  '    )',
+                  '    projected_value_snapshot = models.PositiveBigIntegerField("决策时 projected 值")',
+                  '    exceeded_snapshot = models.BooleanField("决策时是否超限", default=False)',
+              ],
+              [
+                  '    enforcement_mode_snapshot = models.CharField(',
+                  '        "执行模式快照", max_length=16, choices=EnforcementMode.choices',
+                  '    )',
+                  '    consumed_value_snapshot = models.PositiveBigIntegerField("决策时已消费值快照")',
+                  '    reserved_value_snapshot = models.PositiveBigIntegerField("决策时已预留值快照")',
+                  '    projected_value_snapshot = models.PositiveBigIntegerField("决策时 projected 值")',
+                  '    exceeded_snapshot = models.BooleanField("决策时是否超限", default=False)',
+              ],
               "UsageReservationQuota snapshot fields",
           )
 
@@ -110,92 +123,102 @@ jobs:
           )
           models_path.write_text("\n".join(model_lines) + "\n", encoding="utf-8")
 
-          replace_once(
+          replace_lines(
               services_path,
-              '''        moment = at or timezone.now()
-              context = _ScopeLoader.load(scope_ref)
-              principal = _CommercialQuery.active_principal(
-                  principal_id=principal_id,
-                  tenant_id=scope_ref.tenant_id,
-              )
-              scope_defaults = self._exact_scope_defaults(context)
-          ''',
-              '''        moment = at or timezone.now()
-              try:
-                  context = _ScopeLoader.load(scope_ref)
-                  principal = _CommercialQuery.active_principal(
-                      principal_id=principal_id,
-                      tenant_id=scope_ref.tenant_id,
-                  )
-              except CommercialControlError as exc:
-                  # ScopeLoader 被 Entitlement/Budget/Quota 共享；Quota 公共写服务必须把共享基础异常
-                  # 收口成稳定的 QuotaControlError，避免 API 调用方依赖内部 loader 的异常层级。
-                  if isinstance(exc, QuotaControlError):
-                      raise
-                  raise QuotaControlError(str(exc)) from exc
-              scope_defaults = self._exact_scope_defaults(context)
-          ''',
+              [
+                  '        moment = at or timezone.now()',
+                  '        context = _ScopeLoader.load(scope_ref)',
+                  '        principal = _CommercialQuery.active_principal(',
+                  '            principal_id=principal_id,',
+                  '            tenant_id=scope_ref.tenant_id,',
+                  '        )',
+                  '        scope_defaults = self._exact_scope_defaults(context)',
+              ],
+              [
+                  '        moment = at or timezone.now()',
+                  '        try:',
+                  '            context = _ScopeLoader.load(scope_ref)',
+                  '            principal = _CommercialQuery.active_principal(',
+                  '                principal_id=principal_id,',
+                  '                tenant_id=scope_ref.tenant_id,',
+                  '            )',
+                  '        except CommercialControlError as exc:',
+                  '            # ScopeLoader 被 Entitlement/Budget/Quota 共享；Quota 写服务必须把共享基础异常',
+                  '            # 收口成稳定 QuotaControlError，避免调用方依赖内部 loader 的异常层级。',
+                  '            if isinstance(exc, QuotaControlError):',
+                  '                raise',
+                  '            raise QuotaControlError(str(exc)) from exc',
+                  '        scope_defaults = self._exact_scope_defaults(context)',
+              ],
               "UsageReservationService exception boundary",
           )
 
-          replace_once(
+          replace_lines(
               services_path,
-              '''                    limit_snapshot=quota.limit_value,
-                      enforcement_mode_snapshot=quota.enforcement_mode,
-                      projected_value_snapshot=evidence.projected_value,
-                      exceeded_snapshot=evidence.exceeded,
-          ''',
-              '''                    limit_snapshot=quota.limit_value,
-                      enforcement_mode_snapshot=quota.enforcement_mode,
-                      consumed_value_snapshot=evidence.consumed_value,
-                      reserved_value_snapshot=evidence.reserved_value,
-                      projected_value_snapshot=evidence.projected_value,
-                      exceeded_snapshot=evidence.exceeded,
-          ''',
+              [
+                  '                    limit_snapshot=quota.limit_value,',
+                  '                    enforcement_mode_snapshot=quota.enforcement_mode,',
+                  '                    projected_value_snapshot=evidence.projected_value,',
+                  '                    exceeded_snapshot=evidence.exceeded,',
+              ],
+              [
+                  '                    limit_snapshot=quota.limit_value,',
+                  '                    enforcement_mode_snapshot=quota.enforcement_mode,',
+                  '                    consumed_value_snapshot=evidence.consumed_value,',
+                  '                    reserved_value_snapshot=evidence.reserved_value,',
+                  '                    projected_value_snapshot=evidence.projected_value,',
+                  '                    exceeded_snapshot=evidence.exceeded,',
+              ],
               "ReservationQuota evidence persistence",
           )
 
-          replace_once(
+          replace_lines(
               services_path,
-              '''                consumed_value=link.projected_value_snapshot - link.amount,
-                      reserved_value=0,
-          ''',
-              '''                consumed_value=link.consumed_value_snapshot,
-                      reserved_value=link.reserved_value_snapshot,
-          ''',
+              [
+                  '                consumed_value=link.projected_value_snapshot - link.amount,',
+                  '                reserved_value=0,',
+              ],
+              [
+                  '                consumed_value=link.consumed_value_snapshot,',
+                  '                reserved_value=link.reserved_value_snapshot,',
+              ],
               "Idempotent decision evidence replay",
           )
 
-          replace_once(
+          replace_lines(
               tests_path,
-              '''    service = UsageReservationService()
-              kwargs = {
-          ''',
-              '''    service = UsageReservationService()
-              UsageCounter.objects.create(
-                  tenant=tenant,
-                  quota=quota,
-                  consumed_value=3,
-                  reserved_value=1,
-              )
-              kwargs = {
-          ''',
+              [
+                  '    service = UsageReservationService()',
+                  '    kwargs = {',
+              ],
+              [
+                  '    service = UsageReservationService()',
+                  '    UsageCounter.objects.create(',
+                  '        tenant=tenant,',
+                  '        quota=quota,',
+                  '        consumed_value=3,',
+                  '        reserved_value=1,',
+                  '    )',
+                  '    kwargs = {',
+              ],
               "Idempotency evidence fixture",
           )
 
-          replace_once(
+          replace_lines(
               tests_path,
-              '''    assert second.reservation_id == first.reservation_id
-              assert UsageReservation.objects.count() == 1
-              assert UsageCounter.objects.get(quota=quota).reserved_value == 2
-          ''',
-              '''    assert second.reservation_id == first.reservation_id
-              assert second.evidence == first.evidence
-              assert first.evidence[0].consumed_value == 3
-              assert first.evidence[0].reserved_value == 1
-              assert UsageReservation.objects.count() == 1
-              assert UsageCounter.objects.get(quota=quota).reserved_value == 3
-          ''',
+              [
+                  '    assert second.reservation_id == first.reservation_id',
+                  '    assert UsageReservation.objects.count() == 1',
+                  '    assert UsageCounter.objects.get(quota=quota).reserved_value == 2',
+              ],
+              [
+                  '    assert second.reservation_id == first.reservation_id',
+                  '    assert second.evidence == first.evidence',
+                  '    assert first.evidence[0].consumed_value == 3',
+                  '    assert first.evidence[0].reserved_value == 1',
+                  '    assert UsageReservation.objects.count() == 1',
+                  '    assert UsageCounter.objects.get(quota=quota).reserved_value == 3',
+              ],
               "Idempotency exact-evidence assertions",
           )
           PY
