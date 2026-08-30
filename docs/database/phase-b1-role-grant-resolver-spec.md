@@ -1,6 +1,6 @@
 # Phase B1｜RoleGrantResolver 实现规格
 
-> 状态：Implementation Spec  
+> 状态：Implemented / Verified  
 > 作用：只解析 Phase B1 RBAC grant，不等于最终 AuthorizationService。
 
 ## 1. 为什么需要独立 Resolver
@@ -50,12 +50,12 @@ AuthorizationService
 
 ## 2. 输入
 
-建议值对象：
+正式值对象：
 
 ```text
 AuthorizationScope
 - tenant_id
-- workspace_id? 
+- workspace_id?
 - project_id?
 - environment_id?
 ```
@@ -64,7 +64,7 @@ AuthorizationScope
 
 ```text
 principal_id
-at                  datetime
+at                  datetime | None
 ```
 
 Scope 必须形成合法链：
@@ -79,7 +79,7 @@ Project
 Environment
 ```
 
-不能传入来自不同 Tenant 的混合 ID。
+调用方可以只传最深层 ID，由 Resolver 从数据库推导祖先；如果同时显式传入祖先 ID，则必须与真实层级一致。不能传入来自不同 Tenant 的混合 ID，任何不一致均 fail closed。
 
 ---
 
@@ -98,10 +98,12 @@ RoleAssignment(principal = P)
 ```text
 P
  ↓ active GroupMembership
-Group
+Group(status = ACTIVE)
  ↓ active RoleAssignment(group = G)
 Role
 ```
+
+GroupMembership 有效并不代表一个 SUSPENDED/ARCHIVED Group 仍可继续授权；Group 本身必须为 ACTIVE。
 
 严禁把 Group Role 复制成 Direct RoleAssignment。
 
@@ -151,7 +153,7 @@ Environment
 
 ---
 
-## 5. 有效性过滤
+## 5. 有效性过滤与 fail-closed 条件
 
 RoleAssignment 必须：
 
@@ -161,7 +163,12 @@ valid_from <= at   或 valid_from IS NULL
 valid_until > at  或 valid_until IS NULL
 ```
 
-GroupMembership 同样必须有效。
+GroupMembership 同样必须处于有效时间窗口，并且：
+
+```text
+membership.status = ACTIVE
+group.status = ACTIVE
+```
 
 RoleDefinition 必须：
 
@@ -175,23 +182,51 @@ Privilege 必须：
 status = ACTIVE
 ```
 
-`REVOKED`、过期、未来才生效的关系均不能进入结果。
+`REVOKED`、过期、未来才生效、已弃用的关系均不能进入结果。
+
+### 5.1 RoleAssignment.conditions
+
+B1 暂未定义正式条件表达式/evaluator，因此安全语义冻结为：
+
+```text
+conditions == {}
+    → 可进入 B1 grant 解析
+
+conditions != {}
+    → fail closed，不产生 grant
+```
+
+不能因为 JSON 结构“看起来像条件”就默认允许。未来若引入低复杂度 ABAC 条件，必须由独立条件 evaluator 和对应测试接管，再修改此契约。
 
 ---
 
 ## 6. 返回值不能只是一组字符串
 
-建议：
+正式返回证据：
 
 ```text
 ResolvedRoleGrant
 - role_id
+- role_key
+- privilege_id
 - privilege_key
 - source_type        DIRECT | GROUP
 - assignment_id
 - group_id?
 - assignment_scope
 - inherited_from
+```
+
+一次解析返回：
+
+```text
+RoleGrantResolution
+- principal_id
+- target_scope
+- resolved_at
+- grants[]
+- effective_privilege_keys
+- effective_role_ids
 ```
 
 原因：授权 explain / audit / debugging 必须回答：
@@ -214,7 +249,7 @@ execute
   ← Project #...
 ```
 
-这为未来 `AuthorizationDecision.matched_policies/grants` 奠定证据链。
+同一 Privilege 可以存在多条 evidence；`effective_privilege_keys` 可以去重，但 evidence 不能丢失。这为未来 `AuthorizationDecision.matched_policies/grants` 奠定证据链。
 
 ---
 
@@ -262,14 +297,15 @@ Agent RBAC grants
 
 ## 9. 查询策略
 
-第一版使用 PostgreSQL/Django ORM 一次或少量批量查询完成：
+第一版使用 PostgreSQL/Django ORM 少量批量查询完成：
 
 1. 校验目标 scope chain；
-2. 取 Principal 的有效 GroupMembership；
-3. 一次查询 Direct + Group RoleAssignments；
-4. scope ancestor 条件过滤；
-5. select_related Role / prefetch RolePrivilege；
-6. 返回带来源证据的 immutable result。
+2. 校验 Principal 与目标 Tenant；
+3. 取 Principal 的有效 GroupMembership，并验证 Group ACTIVE；
+4. 一次查询 Direct + Group RoleAssignments；
+5. scope ancestor 条件过滤；
+6. 一次批量查询 RolePrivilege + active Privilege；
+7. 返回带来源证据的 immutable result。
 
 禁止 N+1：
 
@@ -290,7 +326,7 @@ Authorization cache / projection
 
 ## 10. Cache 边界
 
-B1 第一版可以不缓存。
+B1 第一版不缓存。
 
 未来缓存 key 至少包含：
 
@@ -306,6 +342,7 @@ RBAC revision / invalidation token
 role assignment changed
 role privileges changed
 group membership changed
+group suspended/archived
 role deprecated
 privilege deprecated
 ```
@@ -314,20 +351,40 @@ privilege deprecated
 
 ---
 
-## 11. 最低测试
+## 11. 已验证行为
+
+当前自动化测试覆盖：
 
 1. Tenant Role 向 Workspace/Project/Environment 继承；
 2. Workspace Role 向所属 Project/Environment 继承，但不能横跨 Workspace；
 3. Project Role 向所属 Environment 继承；
 4. Environment Role 不向兄弟 Environment 传播；
 5. Direct + Group grants 合并；
-6. 过期 GroupMembership 不产生 grants；
-7. REVOKED RoleAssignment 不产生 grants；
-8. Deprecated Role/Privilege 不产生 grants；
-9. 同一 Privilege 通过多个来源获得时保留多条 evidence，但 effective key 可去重；
-10. Django superuser 无 Fabric Role 时结果仍为空；
-11. Agent 与 Human 使用相同算法；
-12. 跨租户 Scope 输入必须拒绝。
+6. 同一 Privilege 多来源时保留多条 evidence；
+7. 过期 GroupMembership 不产生 grants；
+8. SUSPENDED Group 不产生 grants；
+9. REVOKED RoleAssignment 不产生 grants；
+10. Deprecated Role/Privilege 不产生 grants；
+11. Django superuser 无 Fabric Role 时结果仍为空；
+12. Agent 与 Human 使用相同算法；
+13. 跨租户 Scope / Principal 输入必须拒绝；
+14. 非空 RoleAssignment.conditions 在无正式 evaluator 时 fail closed。
+
+Phase A + Phase B1 当前永久 CI 已验证：
+
+```text
+Django system check                  ✅
+models ↔ migrations                  ✅
+empty PostgreSQL/PostGIS migrate     ✅
+34 tests                             ✅
+coverage gate                        ✅
+provider leakage check               ✅
+Ruff                                 ✅
+strict mypy                          ✅
+pip-audit                            ✅
+production Docker build              ✅
+Preview API smoke                    ✅
+```
 
 ---
 
