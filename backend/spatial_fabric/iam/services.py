@@ -26,7 +26,6 @@ from spatial_fabric.iam.models import (
     PrivilegeStatus,
     RoleAssignment,
     RoleAssignmentStatus,
-    RoleDefinition,
     RolePrivilege,
     RoleScopeType,
     RoleStatus,
