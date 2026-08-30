@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-30  
 **Active phase:** Phase B2 — Governance Controls  
-**Current milestone:** **B2.3 Commercial Controls 已完成；下一阶段 B2.4 Elevated Access**  
+**Current milestone:** **B2.4 Elevated Access 已完成；下一阶段为最终 AuthorizationService 组合决策器**
 **Remote branch:** `feat/phase-b2-governance-controls`  
 **Pull request:** #5 — Phase B2 Governance Controls（Draft，stacked on B1）
 
@@ -89,24 +89,40 @@
 - [x] `commercial/0001_initial.py` 由 Django 5.2.17 在真实 PostgreSQL 17 / PostGIS 3.5 Runner 中生成并固化
 - [x] strict mypy 使用具体 Scope 类型收窄；未使用 `Any` / `cast` / `type: ignore` 规避检查
 
-## B2.3 最终验证状态
+### Phase B2.4 — Elevated Access
 
-B2.3 正式 schema 首次由验证 Runner 固化在提交：
+- [x] 独立 `spatial_fabric.elevation` bounded context
+- [x] `PermissionBoundary / PermissionBoundaryPrivilege`
+- [x] `ApprovalRequest / ApprovalRequestPrivilege / ApprovalDecision`
+- [x] `TemporaryAccessGrant / TemporaryAccessGrantPrivilege`
+- [x] `DelegationGrant / DelegationGrantPrivilege`
+- [x] `PermissionBoundaryResolver / ApprovalResolver / TemporaryAccessResolver / DelegationResolver`
+- [x] PermissionBoundary 只裁剪候选权限，不能产生 grant
+- [x] Approval 保存独立状态、决定与 authority evidence，不创建普通 RoleAssignment/ShareGrant
+- [x] JIT 使用独立短时授权 evidence，并以 source ApprovalRequest 保证幂等
+- [x] Break-glass 强理由、60 分钟 TTL 上限、通知要求、authority snapshot 与 request fingerprint 幂等
+- [x] Delegation 创建时保存 authority snapshot，解析时重新验证 delegator 当前有效权限
+- [x] authority checker 缺失、异常、拒绝或权限不足均 fail closed
+- [x] `elevation/0001_initial.py` 由 Django 5.2.17 在真实 PostgreSQL 17 / PostGIS 3.5 Runner 中生成并固化
+
+## 最近永久 CI 验证状态
+
+B2.4 正式 schema 由验证 Runner 固化在提交：
 
 ```text
-4d6d5d0a3aa6c19f2bf123764755397e6b179984
+ab6737011d1dc9f89a0e3cf239ce1cf8f383ba01
 ```
 
 提交消息：
 
 ```text
-db: add verified B2.3 commercial controls schema
+db: add verified B2.4 elevated access schema
 ```
 
-随后删除全部一次性 B2.3 migration/finalize workflow。永久 CI #93 对 cleanup 后真实分支 HEAD：
+随后删除 B2.4 one-shot migration workflow。永久 CI #109 对 cleanup 后真实分支 HEAD：
 
 ```text
-e4d9fd7d2eff8baa6e18a4a85f25ab57bbb316c6
+fe110df9b07ad9d8ae3dabcf6590a14e78efe23d
 ```
 
 在 PostgreSQL 17 / PostGIS 3.5 环境完整通过：
@@ -114,8 +130,8 @@ e4d9fd7d2eff8baa6e18a4a85f25ab57bbb316c6
 - [x] Django `manage.py check`
 - [x] `makemigrations --check --dry-run`
 - [x] 空库正式 `migrate --noinput`
-- [x] 全部领域测试（75 tests）
-- [x] coverage threshold（最近验证 78.21%，阈值 70%）
+- [x] 全部领域测试（91 tests）
+- [x] coverage threshold（最近验证 77.90%，阈值 70%）
 - [x] Provider leakage check
 - [x] Ruff
 - [x] strict mypy
@@ -126,7 +142,7 @@ e4d9fd7d2eff8baa6e18a4a85f25ab57bbb316c6
 - [x] `/api/schema/`
 - [x] `/api/docs/`
 
-一次性 B2.3 workflows 已全部删除；正式构建路径只保留正常 migrations 与永久 CI。
+B2.1—B2.4 一次性 migration/finalize workflows 已全部删除；正式构建路径只保留正常 migrations 与永久 CI。
 
 当前关键 migration 图：
 
@@ -144,9 +160,8 @@ assets/0001_initial + assets/0002_initial
 iam/0002_...
         ↓
 iam/0003_seed_core_privileges
-        ├────────────────────┬────────────────────┐
-        ↓                    ↓                    ↓
-governance/0001         sharing/0001        commercial/0001
+        ↓
+governance/0001 + sharing/0001 + commercial/0001 + elevation/0001
 ```
 
 ## 当前冻结的授权组合方向
@@ -158,7 +173,11 @@ AuthorizationService
   + ShareGrantResolver
   + EntitlementEvaluator
   + QuotaEvaluator
-  + Approval / Delegation / Risk controls
+  + PermissionBoundaryResolver
+  + ApprovalResolver
+  + TemporaryAccessResolver
+  + DelegationResolver
+  + Risk controls
 ```
 
 各子模块继续只提供候选决策/evidence，不提前自称最终 AuthorizationDecision。
@@ -185,7 +204,6 @@ Role ≠ EntitlementGrant ≠ Quota ≠ Budget ≠ UsageRecord
 
 ## 尚未完成
 
-- [ ] **B2.4 Elevated Access：PermissionBoundary / Approval integration / JIT / Break-glass / Delegation**
 - [ ] 最终 AuthorizationService 组合决策器
 - [ ] Render 账号侧真实 Apply Blueprint 与外部 `*.onrender.com` Preview URL 验证
 - [ ] Job / Run / Result
@@ -205,16 +223,7 @@ Role ≠ EntitlementGrant ≠ Quota ≠ Budget ≠ UsageRecord
 
 ## 下一任务
 
-唯一开发主线进入 **B2.4 Elevated Access**。开始编码前先冻结以下边界与状态机：
-
-1. `PermissionBoundary` 是最大权限边界，不是新的 Role，也不能凭空授予权限；
-2. Approval 是高风险操作/临时提升的决策与证据，不等于 ShareGrant / RoleAssignment；
-3. JIT / Temporary Elevation 必须有明确 requester、approver、scope、privilege、有效窗口、理由和 revoke/expire evidence；
-4. Break-glass 必须是显式高风险流程，默认短时、强审计、可追溯，不能成为永久管理员后门；
-5. Delegation 必须区分 delegator / delegatee / delegated scope / privilege，并受 delegator 自身有效权限和 permission boundary 限制；
-6. Elevated Access 仍只作为最终 AuthorizationService 的输入，不能绕过 explicit DENY / policy / entitlement / quota 等治理层；
-7. 先写 dedicated spec + invariants，再生成正式 migration；
-8. B2.4 完成并永久 CI 全绿后，才进入最终 AuthorizationService 组合决策器。
+唯一开发主线进入**最终 AuthorizationService 组合决策器**。实现前必须先冻结组合输入、优先级、evidence 输出和 fail-closed 行为；不得把既有 Role/Policy/Share/Commercial/Elevation bounded context 合并成 God Service，也不得让任何单一 resolver 绕过 explicit DENY、REQUIRE_APPROVAL、Entitlement、Quota/Budget、PermissionBoundary 或 Risk controls。
 
 ## 当前禁止
 
@@ -232,4 +241,4 @@ Role ≠ EntitlementGrant ≠ Quota ≠ Budget ≠ UsageRecord
 - 不新增 provider-specific 核心字段；
 - 不把免费 Preview 环境当成生产环境。
 
-**纪律：只有真实执行过的检查才能标记为通过；B2.4 未实现前不得提前标记。**
+**纪律：只有真实执行过的检查才能标记为通过；最终 AuthorizationService 尚未实现，不得提前标记。**

@@ -13,7 +13,7 @@
 - 当前开发分支：`feat/phase-b2-governance-controls`
 - 当前 stacked PR：**#5 — Phase B2 Governance Controls（Draft）**
 - PR base：`feat/phase-b-iam-governance`
-- 当前阶段：**B2.3 Commercial Controls 已完成，下一任务 B2.4 Elevated Access**
+- 当前阶段：**B2.4 Elevated Access 已完成，下一任务为最终 AuthorizationService 组合决策器**
 
 ## 2. 接手阅读顺序
 
@@ -25,8 +25,9 @@
 6. `docs/database/phase-b2-governance-controls-spec.md`；
 7. `docs/database/phase-b2-resource-sharing-spec.md`；
 8. `docs/database/phase-b2-resource-sharing-amendment-001.md`；
-9. B2.3 Commercial Controls dedicated spec；
-10. 相关 ADR / architecture / database 文档。
+9. `docs/database/phase-b2-commercial-controls-spec.md`；
+10. `docs/database/phase-b2-elevated-access-spec.md`；
+11. 相关 ADR / architecture / database 文档。
 
 若下层代码和上位规范冲突，**禁止静默重构上位架构**。优先使用 Adapter / Provider / Projection / Typed Facet / Package；核心 Contract 确需改变时必须写 ADR 或正式 Amendment。
 
@@ -324,7 +325,11 @@ AuthorizationService
   + ShareGrantResolver
   + EntitlementEvaluator
   + QuotaEvaluator
-  + Approval / Delegation / Risk controls
+  + PermissionBoundaryResolver
+  + ApprovalResolver
+  + TemporaryAccessResolver
+  + DelegationResolver
+  + Risk controls
 ```
 
 任何一个子模块都不能提前自称最终 AuthorizationDecision。
@@ -359,28 +364,27 @@ assets/0002_initial
 iam/0002_...
         ↓
 iam/0003_seed_core_privileges
-        ├────────────────────┬────────────────────┐
-        ↓                    ↓                    ↓
-governance/0001         sharing/0001        commercial/0001
+        ↓
+governance/0001 + sharing/0001 + commercial/0001 + elevation/0001
 ```
 
-B2.2/B2.3 的一次性 migration workflows 均已删除，禁止把临时 workflow 留作正式构建路径。
+B2.1—B2.4 的一次性 migration/finalize workflows 均已删除，禁止把临时 workflow 留作正式构建路径。
 
-## 11. B2.3 最终永久 CI 状态
+## 11. 最近永久 CI 状态
 
 cleanup 后真实分支 HEAD：
 
 ```text
-e4d9fd7d2eff8baa6e18a4a85f25ab57bbb316c6
+fe110df9b07ad9d8ae3dabcf6590a14e78efe23d
 ```
 
-永久 CI **#93** 已完整 SUCCESS：
+永久 CI **#109** 已完整 SUCCESS：
 
 - Django `manage.py check`；
 - model/migration sync；
 - 空 PostgreSQL/PostGIS `migrate --noinput`；
-- 全部领域测试（75 tests）；
-- coverage threshold（最近验证 78.21%，阈值 70%）；
+- 全部领域测试（91 tests）；
+- coverage threshold（最近验证 77.90%，阈值 70%）；
 - Provider leakage check；
 - Ruff；
 - strict mypy；
@@ -391,75 +395,73 @@ e4d9fd7d2eff8baa6e18a4a85f25ab57bbb316c6
 - `/api/schema/`；
 - `/api/docs/`。
 
-因此 B2.3 已达到正式收口条件。
+因此 B2.4 已达到正式收口条件。
 
-## 12. 下一开发阶段：B2.4 Elevated Access
+## 12. B2.4 Elevated Access — 已完成
 
-下一步只进入：
+B2.4 独立 bounded context：
+
+```text
+spatial_fabric.elevation
+```
+
+正式 migration：
+
+```text
+elevation/0001_initial.py
+```
+
+由 Django 5.2.17 在真实 PostgreSQL 17 / PostGIS 3.5 Runner 中生成并验证，首次固化提交：
+
+```text
+ab6737011d1dc9f89a0e3cf239ce1cf8f383ba01
+```
+
+实现对象：
 
 ```text
 PermissionBoundary
-Approval integration
-JIT / Temporary Elevation
-Break-glass
-Delegation
+PermissionBoundaryPrivilege
+ApprovalRequest
+ApprovalRequestPrivilege
+ApprovalDecision
+TemporaryAccessGrant
+TemporaryAccessGrantPrivilege
+DelegationGrant
+DelegationGrantPrivilege
 ```
 
-开始编码前必须先冻结：
-
-### PermissionBoundary
-
-- 是最大权限边界，不是新的 Role；
-- 自身不能凭空产生 grant；
-- 最终有效权限必须与 boundary 取交集或被其裁剪。
-
-### Approval
-
-- 是高风险动作/临时提升的审批状态与证据；
-- 不等于 ShareGrant、RoleAssignment 或 PolicyAttachment；
-- `REQUIRE_APPROVAL` 应能在最终 AuthorizationService 中与 Approval evidence 对接。
-
-### JIT / Temporary Elevation
-
-至少要有：
+实现服务与 resolver：
 
 ```text
-requester
-approver
-beneficiary principal
-scope
-privilege set
-reason
-valid_from / valid_until
-status
-revoke / expire evidence
+PermissionBoundaryResolver
+ApprovalService / ApprovalResolver
+TemporaryAccessService / TemporaryAccessResolver
+DelegationService / DelegationResolver
 ```
 
-必须短时、可撤销、可审计。
+已冻结并由测试覆盖：
 
-### Break-glass
+- PermissionBoundary 只裁剪 candidate privilege，永远不能产生新 grant；
+- Approval 是独立审批状态和 evidence，不创建普通 RoleAssignment/ShareGrant；
+- Approval authority checker 缺失、异常、拒绝时 fail closed，并保存 `authority_snapshot`；
+- JIT 使用独立 `TemporaryAccessGrant`，由唯一 source ApprovalRequest 保证幂等；
+- Break-glass 强制理由、通知要求、60 分钟 TTL 上限、authority snapshot 与 idempotency fingerprint；
+- Delegation 不得超过 delegator 当前有效权限，创建时保存 snapshot，解析时重新验证；
+- deprecated/unknown Privilege、跨 Tenant、无效 Scope 和 checker 异常均 fail closed；
+- 所有 resolver 只返回 candidate/evidence，仍不是最终 AuthorizationDecision。
 
-- 显式高风险流程；
-- 默认短时；
-- 强制理由；
-- 强审计；
-- 不能成为永久超级管理员后门。
+### 下一开发阶段
 
-### Delegation
+唯一开发主线进入最终 `AuthorizationService` 组合决策器。开始实现前必须先冻结：
 
-必须区分：
+1. Role / Policy / Share / Commercial / Elevation / Risk 的组合输入；
+2. `explicit DENY > REQUIRE_APPROVAL > candidate ALLOW` 的精确优先级；
+3. Entitlement、Quota/Budget、PermissionBoundary 与临时/委托证据的 fail-closed 语义；
+4. 可解释 AuthorizationDecision evidence；
+5. 不把各 bounded context 合并成 God Service。
 
-```text
-delegator
-delegatee
-delegated scope
-delegated privilege
-time window
-```
-
-Delegation 不得超过 delegator 自身有效权限，也不得突破 PermissionBoundary / Policy / tenant boundary。
-
-B2.4 仍需先 dedicated spec + invariants，再生成 migration；完整永久 CI 绿后才能进入最终 AuthorizationService 组合决策器。
+最终组合器尚未实现，禁止提前标记完成。
 
 ## 13. 当前 Known Risk
 
@@ -539,5 +541,5 @@ Fabric Console  = 租户/权限/安全/服务/计算/用量/运维管理控制�
 直接输入：
 
 ```text
-继续 yujian-spatial-fabric。先读取 00_PROJECT_HANDOFF.md 和 docs/project/CURRENT_STATUS.md；不要重新设计已冻结架构，从 B2.4 Elevated Access 继续。
+继续 yujian-spatial-fabric。先读取 00_PROJECT_HANDOFF.md 和 docs/project/CURRENT_STATUS.md；不要重新设计已冻结架构，从最终 AuthorizationService 组合决策器继续。
 ```
