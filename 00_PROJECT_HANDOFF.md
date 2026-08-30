@@ -13,7 +13,7 @@
 - 当前开发分支：`feat/phase-b2-governance-controls`
 - 当前 stacked PR：**#5 — Phase B2 Governance Controls（Draft）**
 - PR base：`feat/phase-b-iam-governance`
-- 当前阶段：**B2.2 Resource Sharing 已完成，下一任务 B2.3 Commercial Controls**
+- 当前阶段：**B2.3 Commercial Controls 已完成，下一任务 B2.4 Elevated Access**
 
 ## 2. 接手阅读顺序
 
@@ -25,7 +25,8 @@
 6. `docs/database/phase-b2-governance-controls-spec.md`；
 7. `docs/database/phase-b2-resource-sharing-spec.md`；
 8. `docs/database/phase-b2-resource-sharing-amendment-001.md`；
-9. 相关 ADR / architecture / database 文档。
+9. B2.3 Commercial Controls dedicated spec；
+10. 相关 ADR / architecture / database 文档。
 
 若下层代码和上位规范冲突，**禁止静默重构上位架构**。优先使用 Adapter / Provider / Projection / Typed Facet / Package；核心 Contract 确需改变时必须写 ADR 或正式 Amendment。
 
@@ -51,7 +52,9 @@ Account ≠ Principal
 Role ≠ Policy
 RoleAssignment ≠ PolicyAttachment
 ShareGrant ≠ RoleAssignment
-Entitlement ≠ Quota ≠ Budget
+EntitlementGrant ≠ Quota ≠ Budget ≠ UsageRecord
+PermissionBoundary ≠ Role ≠ RoleAssignment
+Approval ≠ ShareGrant ≠ RoleAssignment
 ```
 
 Published Version 不可原地修改；Provider-specific 概念不得泄漏到 Core Model。
@@ -181,23 +184,7 @@ ResourceRef
 
 ### Contract Amendment 001
 
-原先“同 ResourceRef + 同主体最多一条 ACTIVE ShareGrant”与按 `valid_until` 推导过期的设计会产生时态死锁。
-
-现已正式修正为：
-
-```text
-同一 ResourceRef
-+ 同一 Principal / Group
-+ 可存在多条独立 ShareGrant evidence
-```
-
-Resolver：
-
-- 对每条 evidence 独立检查 ACTIVE / 时间窗口 / conditions；
-- 保留全部 evidence；
-- `effective_privilege_keys` 只对 privilege key 去重。
-
-撤销一条 Grant 不会误伤另一条来源。
+同一 ResourceRef + 同一 Principal / Group 允许存在多条独立 ShareGrant evidence；Resolver 独立检查每条 evidence 并只对最终 privilege key 去重。撤销一条 Grant 不会误伤另一条来源。
 
 ShareGrant 仍只是：
 
@@ -205,13 +192,128 @@ ShareGrant 仍只是：
 resource-level explicit ALLOW candidate
 ```
 
-最终组合仍满足：
+## 8. B2.3 Commercial Controls — 已完成
+
+bounded context：
 
 ```text
-explicit DENY > REQUIRE_APPROVAL > ShareGrant / RBAC ALLOW
+spatial_fabric.commercial
 ```
 
-## 8. AuthorizationService 最终组合方向
+### 8.1 已实现对象
+
+- `EntitlementGrant`
+- `Quota`
+- `Budget`
+- `UsageReservation`
+- `UsageReservationQuota`
+- `UsageCounter`
+- `UsageRecord`
+
+严格保持：
+
+```text
+EntitlementGrant ≠ Quota ≠ Budget ≠ UsageRecord
+```
+
+语义：
+
+- Entitlement = 商业产品/能力资格；
+- Quota = 技术 metric + limit + window + enforcement policy；
+- Budget = 货币/成本治理 policy evidence；
+- UsageRecord = 已发生使用事实；
+- UsageReservation / UsageCounter = 并发安全执行机制，不是新的授权根对象。
+
+### 8.2 已实现 evaluator / service
+
+- `EntitlementEvaluator`
+- `QuotaEvaluator`
+- `BudgetEvaluator`
+- `UsageReservationService.reserve_for_context()`
+- `UsageReservationService.commit()`
+- `UsageReservationService.release()`
+
+### 8.3 Quota reservation 关键契约
+
+一次业务操作只有一个顶层：
+
+```text
+UsageReservation
+```
+
+若同时命中 Tenant / Workspace / Project / Environment 等多条适用 Quota，则使用：
+
+```text
+UsageReservation
+  └─ UsageReservationQuota * N
+```
+
+保存每条独立 quota evidence。
+
+这样同一 idempotency key 可以原子检查/预留全部适用 HARD quota，而不是“先 SUM 再 INSERT”造成竞态。
+
+关键不变量：
+
+- reservation fingerprint 幂等；
+- retry 不重复增加 `reserved_value`；
+- 多 quota 一次事务处理；
+- counter / reservation 使用 row lock；
+- 任一 HARD quota 超限则整个 reservation 回滚；
+- SOFT / OBSERVE 可继续，但保存 `exceeded_snapshot`；
+- stale reservation 到期释放，避免 ghost reserved capacity；
+- commit 把 reserved 原子转入 consumed；
+- GAUGE / CONCURRENCY 可 release committed capacity；
+- CONSUMPTION 一旦 commit 不允许通过 release 擦除事实，未来纠错需独立 adjustment/credit 事件；
+- Quota 写服务把共享 Scope Loader 异常收口为稳定 `QuotaControlError`。
+
+### 8.4 精确 decision evidence
+
+`UsageReservationQuota` 固化决策时：
+
+```text
+limit_snapshot
+ enforcement_mode_snapshot
+consumed_value_snapshot
+reserved_value_snapshot
+projected_value_snapshot
+exceeded_snapshot
+```
+
+因此幂等重试可原样重放原始 quota decision，而不是事后根据 projected 值近似倒推。
+
+### 8.5 Budget 第一版边界
+
+当前 `BudgetEvaluator` 只返回 Scope 继承链上的成本/货币治理 policy evidence。
+
+**没有 normalized cost ledger 前，不伪造实时预算扣减。**
+
+后续如需成本 reservation / settlement，必须先引入独立、可审计的 cost/charge ledger contract，而不是复用技术 Quota counter。
+
+### 8.6 正式 migration
+
+B2.3 正式 migration：
+
+```text
+commercial/0001_initial.py
+```
+
+由 Django 5.2.17 在真实 PostgreSQL 17 / PostGIS 3.5 Runner 中生成并验证。
+
+首次固化提交：
+
+```text
+4d6d5d0a3aa6c19f2bf123764755397e6b179984
+```
+
+message：
+
+```text
+db: add verified B2.3 commercial controls schema
+```
+
+一次性 B2.3 migration/finalize workflows 已全部删除。
+
+## 9. AuthorizationService 最终组合方向
 
 冻结方向：
 
@@ -237,7 +339,7 @@ Agent permission
 ∩ action risk policy
 ```
 
-## 9. 当前正式 migrations
+## 10. 当前正式 migrations
 
 当前主要迁移链已经固化：
 
@@ -257,72 +359,43 @@ assets/0002_initial
 iam/0002_...
         ↓
 iam/0003_seed_core_privileges
-        ├───────────────┐
-        ↓               ↓
-governance/0001     sharing/0001
+        ├────────────────────┬────────────────────┐
+        ↓                    ↓                    ↓
+governance/0001         sharing/0001        commercial/0001
 ```
 
-`sharing/0001_initial.py` 由 Django 5.2.17 在真实 GitHub Runner/PostGIS 环境生成，不是手写猜测 migration。
+B2.2/B2.3 的一次性 migration workflows 均已删除，禁止把临时 workflow 留作正式构建路径。
 
-一次性 B2.2 migration workflow 已删除，禁止把临时 workflow 留作正式构建路径。
+## 11. B2.3 最终永久 CI 状态
 
-## 10. B2.2 最终 CI 状态
-
-永久 CI 对提交：
+cleanup 后真实分支 HEAD：
 
 ```text
-f69dea44bde3d103626fe49fd971bd63cb8a9eef
+e4d9fd7d2eff8baa6e18a4a85f25ab57bbb316c6
 ```
 
-完整通过：
+永久 CI **#93** 已完整 SUCCESS：
 
 - Django `manage.py check`；
 - model/migration sync；
 - 空 PostgreSQL/PostGIS `migrate --noinput`；
-- 全部领域测试（59 tests）；
-- coverage threshold（最近验证 84.90%）；
+- 全部领域测试（75 tests）；
+- coverage threshold（最近验证 78.21%，阈值 70%）；
 - Provider leakage check；
 - Ruff；
 - strict mypy；
 - pip-audit；
-- production Docker build；
+- production Docker image build；
 - production container + `scripts/start-preview.sh`；
 - `/health/ready`；
 - `/api/schema/`；
 - `/api/docs/`。
 
-因此 B2.2 已达到收口条件。
+因此 B2.3 已达到正式收口条件。
 
-## 11. 下一开发阶段：B2.3 Commercial Controls
+## 12. 下一开发阶段：B2.4 Elevated Access
 
 下一步只进入：
-
-```text
-EntitlementGrant
-Quota
-Budget
-Usage hard-limit integration
-```
-
-开始编码前先冻结：
-
-```text
-EntitlementGrant ≠ Quota ≠ Budget ≠ UsageRecord
-```
-
-建议语义方向：
-
-- `EntitlementGrant`：某 Tenant/Principal/Scope 是否拥有某产品、能力或商业功能的“资格”；
-- `Quota`：某 metric 在某作用域和时间窗口内的可消费技术上限；
-- `Budget`：成本/货币/计算信用额度治理，不和技术 quota 合并；
-- `UsageRecord`：已发生使用事实，不等于 Quota policy；
-- hard limit：必须通过统一 evaluator / reservation contract 执行，不能散落在 API controller。
-
-B2.3 必须先完成 dedicated spec + invariants，再生成正式 migration；完整永久 CI 绿后才可进入 B2.4。
-
-## 12. 后续 B2.4
-
-尚未开始：
 
 ```text
 PermissionBoundary
@@ -332,7 +405,61 @@ Break-glass
 Delegation
 ```
 
-禁止提前混入 B2.3。
+开始编码前必须先冻结：
+
+### PermissionBoundary
+
+- 是最大权限边界，不是新的 Role；
+- 自身不能凭空产生 grant；
+- 最终有效权限必须与 boundary 取交集或被其裁剪。
+
+### Approval
+
+- 是高风险动作/临时提升的审批状态与证据；
+- 不等于 ShareGrant、RoleAssignment 或 PolicyAttachment；
+- `REQUIRE_APPROVAL` 应能在最终 AuthorizationService 中与 Approval evidence 对接。
+
+### JIT / Temporary Elevation
+
+至少要有：
+
+```text
+requester
+approver
+beneficiary principal
+scope
+privilege set
+reason
+valid_from / valid_until
+status
+revoke / expire evidence
+```
+
+必须短时、可撤销、可审计。
+
+### Break-glass
+
+- 显式高风险流程；
+- 默认短时；
+- 强制理由；
+- 强审计；
+- 不能成为永久超级管理员后门。
+
+### Delegation
+
+必须区分：
+
+```text
+delegator
+delegatee
+delegated scope
+delegated privilege
+time window
+```
+
+Delegation 不得超过 delegator 自身有效权限，也不得突破 PermissionBoundary / Policy / tenant boundary。
+
+B2.4 仍需先 dedicated spec + invariants，再生成 migration；完整永久 CI 绿后才能进入最终 AuthorizationService 组合决策器。
 
 ## 13. 当前 Known Risk
 
@@ -352,13 +479,20 @@ Delegation
 
 仓库内生产 Docker 与 Preview smoke 已通过，但 Render 账号侧还未真正 Apply Blueprint，因此没有真实 `*.onrender.com` URL。禁止虚构外部部署成功。
 
+### 13.4 Budget cost ledger 尚未设计
+
+B2.3 有意只实现 Budget policy/evidence；没有 normalized cost ledger 前，不做虚假余额扣减或成本结算。
+
 ## 14. 当前禁止
 
 - 不重新设计已经冻结的总体架构；
 - 不把 Entitlement / Quota / Budget 塞回 Role；
 - 不把 ShareGrant 当最终 AuthorizationDecision；
+- 不把 PermissionBoundary 设计成 grant source；
+- 不把 Break-glass 设计成永久超级管理员角色；
+- 不允许 Delegation 超过 delegator 自身有效权限；
 - 不创建万能 `resource(id, type, json)`；
-- 不让 governance/sharing 直接 FK 每一种 Asset/Job/Result/Map 类型；
+- 不让 governance/sharing/commercial 直接 FK 每一种 Asset/Job/Result/Map 类型；
 - 不把 Provider ID 写进 Core Model；
 - 不拆微服务；
 - 不开始 GeoAgent；
@@ -405,5 +539,5 @@ Fabric Console  = 租户/权限/安全/服务/计算/用量/运维管理控制�
 直接输入：
 
 ```text
-继续 yujian-spatial-fabric。先读取 00_PROJECT_HANDOFF.md 和 docs/project/CURRENT_STATUS.md；不要重新设计已冻结架构，从 B2.3 Commercial Controls 继续。
+继续 yujian-spatial-fabric。先读取 00_PROJECT_HANDOFF.md 和 docs/project/CURRENT_STATUS.md；不要重新设计已冻结架构，从 B2.4 Elevated Access 继续。
 ```
