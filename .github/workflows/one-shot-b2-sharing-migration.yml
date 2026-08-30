@@ -81,6 +81,14 @@ jobs:
           path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
+      # Ruff 的 fix 只允许作用于本阶段两份新源文件；随后仍执行全仓 ruff check，
+      # 因此这是确定性的格式修复，不是降低质量门禁。
+      - name: 规范化 B2.2 源文件格式
+        run: >-
+          uv run ruff check --fix
+          backend/spatial_fabric/sharing/models.py
+          backend/spatial_fabric/sharing/services.py
+
       - name: Django 系统检查
         run: uv run python backend/manage.py check
 
@@ -110,7 +118,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add backend/spatial_fabric/sharing/services.py backend/spatial_fabric/sharing/migrations/
+          git add \
+            backend/spatial_fabric/sharing/models.py \
+            backend/spatial_fabric/sharing/services.py \
+            backend/spatial_fabric/sharing/migrations/
           if git diff --cached --quiet; then
             echo "No B2.2 source/migration changes generated."
             exit 1
