@@ -342,22 +342,37 @@ def test_reservation_idempotency_does_not_double_reserve() -> None:
         window_type=QuotaWindowType.NONE,
     )
     service = UsageReservationService()
-    kwargs = {
-        "principal_id": user.id,
-        "metric_key": "concurrent_jobs",
-        "measurement_type": QuotaMeasurementType.CONCURRENCY,
-        "unit": "count",
-        "scope_ref": CommercialScopeRef(tenant.id, CommercialScopeType.TENANT),
-        "amount": 2,
-        "idempotency_key": "idem-001",
-    }
-
-    first = service.reserve_for_context(**kwargs)
-    second = service.reserve_for_context(**kwargs)
+    UsageCounter.objects.create(
+        tenant=tenant,
+        quota=quota,
+        consumed_value=3,
+        reserved_value=1,
+    )
+    first = service.reserve_for_context(
+        principal_id=user.id,
+        metric_key="concurrent_jobs",
+        measurement_type=QuotaMeasurementType.CONCURRENCY,
+        unit="count",
+        scope_ref=CommercialScopeRef(tenant.id, CommercialScopeType.TENANT),
+        amount=2,
+        idempotency_key="idem-001",
+    )
+    second = service.reserve_for_context(
+        principal_id=user.id,
+        metric_key="concurrent_jobs",
+        measurement_type=QuotaMeasurementType.CONCURRENCY,
+        unit="count",
+        scope_ref=CommercialScopeRef(tenant.id, CommercialScopeType.TENANT),
+        amount=2,
+        idempotency_key="idem-001",
+    )
 
     assert second.reservation_id == first.reservation_id
+    assert second.evidence == first.evidence
+    assert first.evidence[0].consumed_value == 3
+    assert first.evidence[0].reserved_value == 1
     assert UsageReservation.objects.count() == 1
-    assert UsageCounter.objects.get(quota=quota).reserved_value == 2
+    assert UsageCounter.objects.get(quota=quota).reserved_value == 3
 
 
 @pytest.mark.django_db

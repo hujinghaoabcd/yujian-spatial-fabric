@@ -61,7 +61,7 @@ class QuotaAccountingInvariantError(QuotaControlError):
 class QuotaExceededError(QuotaControlError):
     """至少一条 applicable HARD quota 被 projected usage 超过。"""
 
-    def __init__(self, evidence: tuple["QuotaDecisionEvidence", ...]) -> None:
+    def __init__(self, evidence: tuple[QuotaDecisionEvidence, ...]) -> None:
         self.evidence = evidence
         quota_ids = ", ".join(str(item.quota_id) for item in evidence if item.exceeded)
         super().__init__(f"HARD quota exceeded: {quota_ids}")
@@ -416,11 +416,18 @@ class UsageReservationService:
             ttl=ttl,
         )
         moment = at or timezone.now()
-        context = _ScopeLoader.load(scope_ref)
-        principal = _CommercialQuery.active_principal(
-            principal_id=principal_id,
-            tenant_id=scope_ref.tenant_id,
-        )
+        try:
+            context = _ScopeLoader.load(scope_ref)
+            principal = _CommercialQuery.active_principal(
+                principal_id=principal_id,
+                tenant_id=scope_ref.tenant_id,
+            )
+        except CommercialControlError as exc:
+            # ScopeLoader 被 Entitlement/Budget/Quota 共享；Quota 写服务必须把共享基础异常
+            # 收口成稳定 QuotaControlError，避免调用方依赖内部 loader 的异常层级。
+            if isinstance(exc, QuotaControlError):
+                raise
+            raise QuotaControlError(str(exc)) from exc
         scope_defaults = self._exact_scope_defaults(context)
 
         with transaction.atomic():
@@ -514,6 +521,8 @@ class UsageReservationService:
                     amount=amount,
                     limit_snapshot=quota.limit_value,
                     enforcement_mode_snapshot=quota.enforcement_mode,
+                    consumed_value_snapshot=evidence.consumed_value,
+                    reserved_value_snapshot=evidence.reserved_value,
                     projected_value_snapshot=evidence.projected_value,
                     exceeded_snapshot=evidence.exceeded,
                 )
@@ -837,8 +846,8 @@ class UsageReservationService:
                 counter_id=link.counter_id,
                 enforcement_mode=link.enforcement_mode_snapshot,
                 limit_value=link.limit_snapshot,
-                consumed_value=link.projected_value_snapshot - link.amount,
-                reserved_value=0,
+                consumed_value=link.consumed_value_snapshot,
+                reserved_value=link.reserved_value_snapshot,
                 requested_amount=link.amount,
                 projected_value=link.projected_value_snapshot,
                 exceeded=link.exceeded_snapshot,

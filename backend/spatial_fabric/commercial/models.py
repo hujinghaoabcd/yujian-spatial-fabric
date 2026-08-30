@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
@@ -25,6 +26,9 @@ from django.utils import timezone
 
 from spatial_fabric.common.models import ConcurrentModel, TimeStampedModel, UUID7Model
 from spatial_fabric.iam.models import Principal
+
+if TYPE_CHECKING:
+    from spatial_fabric.tenancy.models import Environment, Project, Workspace
 
 commercial_key_validator = RegexValidator(
     regex=r"^[a-z][a-z0-9_.:-]{0,159}$",
@@ -305,9 +309,9 @@ class EntitlementGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
         self,
         errors: dict[str, str],
         *,
-        workspace: object | None,
-        project: object | None,
-        environment: object | None,
+        workspace: Workspace | None,
+        project: Project | None,
+        environment: Environment | None,
     ) -> None:
         """Scope shape 由数据库兜底；这里补充跨表 tenant 比较与可读错误。"""
 
@@ -317,17 +321,17 @@ class EntitlementGrant(UUID7Model, TimeStampedModel, ConcurrentModel):
         elif self.scope_type == CommercialScopeType.WORKSPACE:
             if workspace is None or self.project_id or self.environment_id:
                 errors["workspace"] = "WORKSPACE scope 必须且只能指定 Workspace。"
-            elif self.workspace.tenant_id != self.tenant_id:
+            elif workspace.tenant_id != self.tenant_id:
                 errors["workspace"] = "Workspace 必须属于同一 Tenant。"
         elif self.scope_type == CommercialScopeType.PROJECT:
             if self.workspace_id or project is None or self.environment_id:
                 errors["project"] = "PROJECT scope 必须且只能指定 Project。"
-            elif self.project.tenant_id != self.tenant_id:
+            elif project.tenant_id != self.tenant_id:
                 errors["project"] = "Project 必须属于同一 Tenant。"
         elif self.scope_type == CommercialScopeType.ENVIRONMENT:
             if self.workspace_id or self.project_id or environment is None:
                 errors["environment"] = "ENVIRONMENT scope 必须且只能指定 Environment。"
-            elif self.environment.tenant_id != self.tenant_id:
+            elif environment.tenant_id != self.tenant_id:
                 errors["environment"] = "Environment 必须属于同一 Tenant。"
         else:
             errors["scope_type"] = "未知商业作用域类型。"
@@ -570,9 +574,9 @@ class Quota(UUID7Model, TimeStampedModel, ConcurrentModel):
         self,
         errors: dict[str, str],
         *,
-        workspace: object | None,
-        project: object | None,
-        environment: object | None,
+        workspace: Workspace | None,
+        project: Project | None,
+        environment: Environment | None,
     ) -> None:
         if self.scope_type == CommercialScopeType.TENANT:
             if self.workspace_id or self.project_id or self.environment_id:
@@ -580,17 +584,17 @@ class Quota(UUID7Model, TimeStampedModel, ConcurrentModel):
         elif self.scope_type == CommercialScopeType.WORKSPACE:
             if workspace is None or self.project_id or self.environment_id:
                 errors["workspace"] = "WORKSPACE Quota 必须且只能指定 Workspace。"
-            elif self.workspace.tenant_id != self.tenant_id:
+            elif workspace.tenant_id != self.tenant_id:
                 errors["workspace"] = "Quota Workspace 必须属于同一 Tenant。"
         elif self.scope_type == CommercialScopeType.PROJECT:
             if self.workspace_id or project is None or self.environment_id:
                 errors["project"] = "PROJECT Quota 必须且只能指定 Project。"
-            elif self.project.tenant_id != self.tenant_id:
+            elif project.tenant_id != self.tenant_id:
                 errors["project"] = "Quota Project 必须属于同一 Tenant。"
         elif self.scope_type == CommercialScopeType.ENVIRONMENT:
             if self.workspace_id or self.project_id or environment is None:
                 errors["environment"] = "ENVIRONMENT Quota 必须且只能指定 Environment。"
-            elif self.environment.tenant_id != self.tenant_id:
+            elif environment.tenant_id != self.tenant_id:
                 errors["environment"] = "Quota Environment 必须属于同一 Tenant。"
         else:
             errors["scope_type"] = "未知 Quota scope_type。"
@@ -767,17 +771,17 @@ class Budget(UUID7Model, TimeStampedModel, ConcurrentModel):
         elif self.scope_type == CommercialScopeType.WORKSPACE:
             if workspace is None or self.project_id or self.environment_id:
                 errors["workspace"] = "WORKSPACE Budget 必须且只能指定 Workspace。"
-            elif self.workspace.tenant_id != self.tenant_id:
+            elif workspace.tenant_id != self.tenant_id:
                 errors["workspace"] = "Budget Workspace 必须属于同一 Tenant。"
         elif self.scope_type == CommercialScopeType.PROJECT:
             if self.workspace_id or project is None or self.environment_id:
                 errors["project"] = "PROJECT Budget 必须且只能指定 Project。"
-            elif self.project.tenant_id != self.tenant_id:
+            elif project.tenant_id != self.tenant_id:
                 errors["project"] = "Budget Project 必须属于同一 Tenant。"
         elif self.scope_type == CommercialScopeType.ENVIRONMENT:
             if self.workspace_id or self.project_id or environment is None:
                 errors["environment"] = "ENVIRONMENT Budget 必须且只能指定 Environment。"
-            elif self.environment.tenant_id != self.tenant_id:
+            elif environment.tenant_id != self.tenant_id:
                 errors["environment"] = "Budget Environment 必须属于同一 Tenant。"
         else:
             errors["scope_type"] = "未知 Budget scope_type。"
@@ -1027,23 +1031,27 @@ class UsageReservation(UUID7Model, TimeStampedModel, ConcurrentModel):
             raise ValidationError(errors)
 
     def _validate_scope(self, errors: dict[str, str]) -> None:
+        workspace = self.workspace if self.workspace_id else None
+        project = self.project if self.project_id else None
+        environment = self.environment if self.environment_id else None
+
         if self.scope_type == CommercialScopeType.TENANT:
             if self.workspace_id or self.project_id or self.environment_id:
                 errors["scope_type"] = "TENANT usage scope 不能携带子级 Scope。"
         elif self.scope_type == CommercialScopeType.WORKSPACE:
-            if not self.workspace_id or self.project_id or self.environment_id:
+            if workspace is None or self.project_id or self.environment_id:
                 errors["workspace"] = "WORKSPACE usage scope 必须且只能指定 Workspace。"
-            elif self.workspace.tenant_id != self.tenant_id:
+            elif workspace.tenant_id != self.tenant_id:
                 errors["workspace"] = "Usage Workspace 必须属于同一 Tenant。"
         elif self.scope_type == CommercialScopeType.PROJECT:
-            if self.workspace_id or not self.project_id or self.environment_id:
+            if self.workspace_id or project is None or self.environment_id:
                 errors["project"] = "PROJECT usage scope 必须且只能指定 Project。"
-            elif self.project.tenant_id != self.tenant_id:
+            elif project.tenant_id != self.tenant_id:
                 errors["project"] = "Usage Project 必须属于同一 Tenant。"
         elif self.scope_type == CommercialScopeType.ENVIRONMENT:
-            if self.workspace_id or self.project_id or not self.environment_id:
+            if self.workspace_id or self.project_id or environment is None:
                 errors["environment"] = "ENVIRONMENT usage scope 必须且只能指定 Environment。"
-            elif self.environment.tenant_id != self.tenant_id:
+            elif environment.tenant_id != self.tenant_id:
                 errors["environment"] = "Usage Environment 必须属于同一 Tenant。"
         else:
             errors["scope_type"] = "未知 Usage scope_type。"
@@ -1084,6 +1092,8 @@ class UsageReservationQuota(UUID7Model, TimeStampedModel):
     enforcement_mode_snapshot = models.CharField(
         "执行模式快照", max_length=16, choices=EnforcementMode.choices
     )
+    consumed_value_snapshot = models.PositiveBigIntegerField("决策时已消费值快照")
+    reserved_value_snapshot = models.PositiveBigIntegerField("决策时已预留值快照")
     projected_value_snapshot = models.PositiveBigIntegerField("决策时 projected 值")
     exceeded_snapshot = models.BooleanField("决策时是否超限", default=False)
 
@@ -1108,7 +1118,7 @@ class UsageReservationQuota(UUID7Model, TimeStampedModel):
         if self.reservation_id and self.reservation.tenant_id != self.tenant_id:
             errors["tenant"] = "ReservationQuota.tenant 必须与 Reservation 一致。"
         if self.quota_id and self.quota.tenant_id != self.tenant_id:
-            errors["quota"] = "ReservationQuota.Quo​​ta 必须属于同一 Tenant。"
+            errors["quota"] = "ReservationQuota.Quota 必须属于同一 Tenant。"
         if self.counter_id and self.quota_id and self.counter.quota_id != self.quota_id:
             errors["counter"] = "ReservationQuota.Counter 必须属于同一 Quota。"
         if self.reservation_id and self.quota_id:
